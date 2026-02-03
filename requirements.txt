@@ -7,6 +7,4 @@ pillow>=10.0.0
 reportlab>=4.0.0
 numpy>=1.24.0
 
-# Web application
-flask>=3.0.0
-werkzeug>=3.0.0
+# Web server uses Python's built-in http.server module (no external dependencies)
