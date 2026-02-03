@@ -6,12 +6,20 @@ You are a Python automation specialist for USI-PRO, a CNC machining company. You
 
 ```
 usipro/
-├── input/           # Drop ZIP or PDF files here
-├── output/          # Anonymized ZIPs go here
+├── input/              # Drop ZIP or PDF files here
+├── output/             # Anonymized ZIPs go here
 ├── assets/
-│   └── logo.png     # USI-PRO logo
-├── anonymize.py     # Main script
-└── CLAUDE.md        # This file
+│   └── logo.png        # USI-PRO logo
+├── static/
+│   ├── css/
+│   │   └── styles.css  # Main stylesheet
+│   └── js/
+│       └── main.js     # Client-side JavaScript
+├── index.html          # Main web interface
+├── viewer.html         # PDF viewer page
+├── server.py           # Minimal HTTP server (no Flask required)
+├── anonymize.py        # Main anonymization script
+└── CLAUDE.md           # This file
 ```
 
 ## TASK
@@ -103,11 +111,16 @@ Three fixed zones:
 
 ## TECH STACK
 
+**PDF Processing:**
 - **pypdfium2** — PDF reading and page-to-image conversion
 - **Pillow (PIL)** — Image manipulation, white-filling zones
 - **reportlab** — PDF generation with footer overlay
 
-Install with: `pip install pypdfium2 pillow reportlab`
+**Web Interface:**
+- **Static HTML/CSS/JS** — No framework dependencies
+- **Python http.server** — Built-in HTTP server (no Flask required)
+
+Install with: `pip install pypdfium2 pillow reportlab numpy`
 
 ## CRITICAL RULES
 
@@ -121,6 +134,8 @@ Install with: `pip install pypdfium2 pillow reportlab`
 
 ## RUNNING
 
+### Command Line
+
 ```bash
 # Single ZIP
 python anonymize.py input/454323.zip
@@ -131,6 +146,18 @@ python anonymize.py input/drawing.pdf --plan-id 1928
 # Batch all ZIPs in input/
 python anonymize.py input/
 ```
+
+### Web Interface
+
+```bash
+# Start the web server (default: http://0.0.0.0:5000)
+python server.py
+
+# Custom host and port
+python server.py --host 127.0.0.1 --port 8080
+```
+
+Open your browser to http://localhost:5000 to access the web interface.
 
 ## EXAMPLE
 
