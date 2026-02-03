@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ filename }} - USI-PRO Viewer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #525659;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .toolbar {
+            background: #1a1a2e;
+            color: white;
+            padding: 10px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .toolbar-left {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .toolbar a {
+            color: white;
+            text-decoration: none;
+        }
+
+        .toolbar h1 {
+            font-size: 1.1em;
+            font-weight: 500;
+        }
+
+        .toolbar-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .toolbar-actions a {
+            padding: 8px 16px;
+            background: #e63946;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            font-size: 0.9em;
+            transition: background 0.2s ease;
+        }
+
+        .toolbar-actions a:hover {
+            background: #c5303c;
+        }
+
+        .toolbar-actions a.secondary {
+            background: #457b9d;
+        }
+
+        .toolbar-actions a.secondary:hover {
+            background: #3a6a88;
+        }
+
+        .viewer {
+            flex: 1;
+            position: relative;
+        }
+
+        .viewer iframe {
+            width: 100%;
+            height: 100%;
+            border: none;
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="toolbar">
+        <div class="toolbar-left">
+            <a href="/">&larr; Back</a>
+            <h1>{{ filename }}</h1>
+        </div>
+        <div class="toolbar-actions">
+            <a href="{{ url_for('serve_output', filename=filename) }}" download>Download</a>
+            <a href="/" class="secondary">Upload New</a>
+        </div>
+    </div>
+    <div class="viewer">
+        <iframe src="{{ url_for('serve_output', filename=filename) }}#toolbar=1&navpanes=0"></iframe>
+    </div>
+</body>
+</html>
