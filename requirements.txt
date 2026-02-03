@@ -1,0 +1,12 @@
+# USI-PRO Technical Drawing Anonymization Pipeline
+# Install with: pip install -r requirements.txt
+
+# PDF processing
+pypdfium2>=4.0.0
+pillow>=10.0.0
+reportlab>=4.0.0
+numpy>=1.24.0
+
+# Web application
+flask>=3.0.0
+werkzeug>=3.0.0
