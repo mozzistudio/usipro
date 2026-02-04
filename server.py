@@ -55,6 +55,14 @@ def run_anonymization(input_path: Path, plan_id: str = None) -> dict:
 
         success = result.returncode == 0
 
+        # Log output for debugging
+        if result.stdout:
+            print(f"[anonymize.py stdout] {result.stdout}")
+        if result.stderr:
+            print(f"[anonymize.py stderr] {result.stderr}")
+        if not success:
+            print(f"[anonymize.py] FAILED with return code {result.returncode}")
+
         # Find output file(s)
         output_files = []
         if success:
