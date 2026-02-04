@@ -9,9 +9,9 @@ import base64
 import io
 import json
 import os
+import re
 import subprocess
 import uuid
-import cgi
 import mimetypes
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
@@ -195,6 +195,81 @@ def image_to_pdf(img: Image.Image, output_path: Path, original_pdf_path: Path = 
 def allowed_file(filename):
     """Check if file extension is allowed."""
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+def parse_multipart_form(content_type: str, body: bytes) -> dict:
+    """
+    Parse multipart form data without using the deprecated cgi module.
+
+    Returns a dict with:
+    - 'file': {'filename': str, 'content': bytes} or None
+    - 'plan_id': str or None
+    """
+    result = {'file': None, 'plan_id': None}
+
+    # Extract boundary from content type
+    boundary_match = re.search(r'boundary=([^\s;]+)', content_type)
+    if not boundary_match:
+        return result
+
+    boundary = boundary_match.group(1).encode()
+
+    # Handle quoted boundary
+    if boundary.startswith(b'"') and boundary.endswith(b'"'):
+        boundary = boundary[1:-1]
+
+    # Split by boundary
+    parts = body.split(b'--' + boundary)
+
+    for part in parts:
+        if not part or part.strip() in (b'', b'--', b'--\r\n'):
+            continue
+
+        # Split headers from content
+        if b'\r\n\r\n' in part:
+            header_section, content = part.split(b'\r\n\r\n', 1)
+        elif b'\n\n' in part:
+            header_section, content = part.split(b'\n\n', 1)
+        else:
+            continue
+
+        # Remove trailing boundary markers from content
+        content = content.rstrip(b'\r\n-')
+
+        # Parse headers
+        headers = {}
+        for line in header_section.decode('utf-8', errors='ignore').split('\n'):
+            line = line.strip()
+            if ':' in line:
+                key, value = line.split(':', 1)
+                headers[key.lower().strip()] = value.strip()
+
+        # Get content-disposition
+        content_disp = headers.get('content-disposition', '')
+
+        # Extract field name
+        name_match = re.search(r'name="([^"]+)"', content_disp)
+        if not name_match:
+            continue
+        field_name = name_match.group(1)
+
+        # Extract filename if present (indicates file upload)
+        filename_match = re.search(r'filename="([^"]*)"', content_disp)
+
+        if filename_match:
+            # This is a file upload
+            filename = filename_match.group(1)
+            if field_name == 'file' and filename:
+                result['file'] = {
+                    'filename': filename,
+                    'content': content
+                }
+        else:
+            # This is a regular form field
+            if field_name == 'plan_id':
+                result['plan_id'] = content.decode('utf-8', errors='ignore').strip() or None
+
+    return result
 
 
 def run_anonymization(input_path: Path, plan_id: str = None) -> dict:
@@ -477,39 +552,39 @@ class USIProHandler(SimpleHTTPRequestHandler):
             self.send_json({'error': 'Invalid content type'}, 400)
             return
 
-        # Parse multipart form data
+        # Read the request body
+        content_length = int(self.headers.get('Content-Length', 0))
+        if content_length > MAX_CONTENT_LENGTH:
+            self.send_json({'error': 'File too large. Maximum size is 50MB.'}, 400)
+            return
+
+        body = self.rfile.read(content_length)
+
+        # Parse multipart form data using our custom parser
         try:
-            form = cgi.FieldStorage(
-                fp=self.rfile,
-                headers=self.headers,
-                environ={
-                    'REQUEST_METHOD': 'POST',
-                    'CONTENT_TYPE': content_type,
-                }
-            )
+            form_data = parse_multipart_form(content_type, body)
         except Exception as e:
             self.send_json({'error': f'Failed to parse form data: {e}'}, 400)
             return
 
         # Get uploaded file
-        if 'file' not in form:
+        if not form_data['file']:
             self.send_json({'error': 'No file provided'}, 400)
             return
 
-        file_item = form['file']
-        if not file_item.filename:
+        file_info = form_data['file']
+        filename = os.path.basename(file_info['filename'])
+
+        if not filename:
             self.send_json({'error': 'No file selected'}, 400)
             return
 
-        filename = os.path.basename(file_item.filename)
         if not allowed_file(filename):
             self.send_json({'error': 'Invalid file type. Only PDF and ZIP files are allowed.'}, 400)
             return
 
         # Get plan_id
-        plan_id = None
-        if 'plan_id' in form:
-            plan_id = form['plan_id'].value.strip() or None
+        plan_id = form_data['plan_id']
 
         # Save uploaded file
         unique_filename = f"{uuid.uuid4().hex[:8]}_{filename}"
@@ -517,7 +592,7 @@ class USIProHandler(SimpleHTTPRequestHandler):
 
         try:
             with open(input_path, 'wb') as f:
-                f.write(file_item.file.read())
+                f.write(file_info['content'])
 
             # Run anonymization
             result = run_anonymization(input_path, plan_id)

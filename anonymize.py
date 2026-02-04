@@ -920,6 +920,60 @@ def anonymize_page(
     return output_path
 
 
+def merge_pdfs(pdf_paths: List[Path], output_path: Path):
+    """
+    Merge multiple single-page PDFs into one multi-page PDF.
+    Uses reportlab to create a new PDF with all pages.
+    """
+    if not pdf_paths:
+        return
+
+    if len(pdf_paths) == 1:
+        shutil.copy(str(pdf_paths[0]), str(output_path))
+        return
+
+    # Get page sizes from each PDF
+    page_infos = []
+    for pdf_path in pdf_paths:
+        pdf = pdfium.PdfDocument(str(pdf_path))
+        page = pdf[0]
+        page_infos.append((page.get_width(), page.get_height()))
+        pdf.close()
+
+    # Create merged PDF using reportlab
+    c = canvas.Canvas(str(output_path))
+
+    for idx, pdf_path in enumerate(pdf_paths):
+        page_width, page_height = page_infos[idx]
+
+        # Set page size for this page
+        c.setPageSize((page_width, page_height))
+
+        # Render the PDF page to image
+        pdf = pdfium.PdfDocument(str(pdf_path))
+        page = pdf[0]
+        scale = DPI / 72.0
+        bitmap = page.render(scale=scale, rotation=0)
+        pil_image = bitmap.to_pil()
+        pdf.close()
+
+        # Save image temporarily
+        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+            pil_image.save(tmp.name, 'PNG')
+            temp_img_path = tmp.name
+
+        try:
+            c.drawImage(temp_img_path, 0, 0, width=page_width, height=page_height)
+        finally:
+            os.unlink(temp_img_path)
+
+        # Add new page (except for the last one)
+        if idx < len(pdf_paths) - 1:
+            c.showPage()
+
+    c.save()
+
+
 def process_pdf(
     pdf_path: Path,
     output_dir: Path,
@@ -942,10 +996,6 @@ def process_pdf(
         )
     else:
         # Multi-page PDF - process each page and combine
-        from reportlab.lib.pagesizes import letter
-        from reportlab.pdfgen import canvas as pdf_canvas
-        from PyPDF2 import PdfWriter, PdfReader
-
         temp_pages = []
 
         for i in range(analysis.page_count):
@@ -960,12 +1010,13 @@ def process_pdf(
             )
             temp_pages.append(temp_path)
 
-        # Merge pages (simplified - for now just use first page)
-        # In production, you'd use PyPDF2 to merge properly
+        # Merge all pages into single PDF
         if temp_pages:
-            shutil.move(str(temp_pages[0]), str(output_pdf))
-            for temp_path in temp_pages[1:]:
-                temp_path.unlink()
+            merge_pdfs(temp_pages, output_pdf)
+            # Clean up temp files
+            for temp_path in temp_pages:
+                if temp_path.exists():
+                    temp_path.unlink()
 
     return output_pdf
 
