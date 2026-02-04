@@ -7,13 +7,14 @@ No Flask required - uses Python's built-in http.server module.
 
 import json
 import os
+import socket
 import subprocess
 import uuid
 import cgi
 import mimetypes
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, unquote
 
 # Configuration
 BASE_DIR = Path(__file__).parent
@@ -87,16 +88,26 @@ def run_anonymization(input_path: Path, plan_id: str = None) -> dict:
         }
 
 
+class ReuseAddrHTTPServer(HTTPServer):
+    """HTTPServer with SO_REUSEADDR to allow quick restarts."""
+    allow_reuse_address = True
+
+    def server_bind(self):
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        super().server_bind()
+
+
 class USIProHandler(SimpleHTTPRequestHandler):
     """Custom HTTP request handler for USI-PRO."""
 
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, directory=str(BASE_DIR), **kwargs)
+        # Don't pass directory to parent - we handle all routing ourselves
+        super().__init__(*args, **kwargs)
 
     def do_GET(self):
         """Handle GET requests."""
         parsed = urlparse(self.path)
-        path = parsed.path
+        path = unquote(parsed.path)  # Decode URL-encoded characters
 
         # API: List files
         if path == '/api/files':
@@ -118,9 +129,19 @@ class USIProHandler(SimpleHTTPRequestHandler):
             self.serve_file(BASE_DIR / 'viewer.html', 'text/html')
             return
 
-        # Serve static assets
-        if path.startswith('/static/'):
-            file_path = BASE_DIR / path[1:]  # Remove leading '/'
+        # Serve static assets (handle both /static/ and ./static/ paths)
+        if path.startswith('/static/') or path.startswith('./static/'):
+            # Normalize path - remove leading ./ or /
+            clean_path = path.lstrip('./').lstrip('/')
+            file_path = (BASE_DIR / clean_path).resolve()
+
+            # Security check: ensure path is within BASE_DIR
+            try:
+                file_path.relative_to(BASE_DIR)
+            except ValueError:
+                self.send_error(403, 'Access denied')
+                return
+
             if file_path.exists() and file_path.is_file():
                 content_type, _ = mimetypes.guess_type(str(file_path))
                 self.serve_file(file_path, content_type or 'application/octet-stream')
@@ -266,10 +287,10 @@ class USIProHandler(SimpleHTTPRequestHandler):
         print(f"[{self.log_date_time_string()}] {args[0]}")
 
 
-def run_server(host='0.0.0.0', port=5000):
+def run_server(host='0.0.0.0', port=8080):
     """Run the HTTP server."""
     server_address = (host, port)
-    httpd = HTTPServer(server_address, USIProHandler)
+    httpd = ReuseAddrHTTPServer(server_address, USIProHandler)
     print(f"USI-PRO Server running at http://{host}:{port}")
     print("Press Ctrl+C to stop")
     try:
@@ -283,7 +304,7 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='USI-PRO Static Web Server')
     parser.add_argument('--host', default='0.0.0.0', help='Host to bind to (default: 0.0.0.0)')
-    parser.add_argument('--port', type=int, default=5000, help='Port to listen on (default: 5000)')
+    parser.add_argument('--port', type=int, default=8080, help='Port to listen on (default: 8080)')
     args = parser.parse_args()
 
     run_server(args.host, args.port)

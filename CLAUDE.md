@@ -150,14 +150,14 @@ python anonymize.py input/
 ### Web Interface
 
 ```bash
-# Start the web server (default: http://0.0.0.0:5000)
+# Start the web server (default: http://0.0.0.0:8080)
 python server.py
 
 # Custom host and port
-python server.py --host 127.0.0.1 --port 8080
+python server.py --host 127.0.0.1 --port 3000
 ```
 
-Open your browser to http://localhost:5000 to access the web interface.
+Open your browser to http://localhost:8080 to access the web interface.
 
 ## EXAMPLE
 
