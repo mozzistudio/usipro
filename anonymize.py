@@ -2,9 +2,14 @@
 """
 USI-PRO Technical Drawing Anonymization Pipeline
 
-This script anonymizes technical drawings by removing proprietary information
+This script anonymizes technical drawings by extracting clean drawing views
+and rebuilding them on blank pages, removing all proprietary information
 (logos, title blocks, company names) while preserving technical content
 (geometry, dimensions, tolerances) and adding standardized USI-PRO branding.
+
+APPROACH: Extract and Rebuild
+Instead of trying to detect what to remove (blacklist), we extract individual
+drawing views and rebuild them on a clean white page.
 
 Usage:
     python anonymize.py input/454323.zip           # Process a ZIP file
@@ -21,8 +26,9 @@ import tempfile
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Tuple
 
+import numpy as np
 import pypdfium2 as pdfium
 from PIL import Image, ImageDraw, ImageFilter, ImageOps
 from reportlab.lib.pagesizes import A3, A4, landscape, portrait
@@ -87,6 +93,16 @@ class PDFAnalysis:
     detected_format: str = "unknown"
     extracted_data: ExtractedData = field(default_factory=ExtractedData)
     is_scan: bool = False
+
+
+@dataclass
+class DrawingView:
+    """A single drawing view extracted from a page."""
+    bbox: Tuple[int, int, int, int]  # (x1, y1, x2, y2) bounding box
+    image: Image.Image  # Cropped image of this view
+    center_x: float  # Center X position (normalized 0-1)
+    center_y: float  # Center Y position (normalized 0-1)
+    area: int  # Bounding box area in pixels
 
 
 def detect_page_size(width: float, height: float) -> tuple[str, str]:
@@ -285,303 +301,529 @@ def render_page_to_image(pdf_path: Path, page_num: int, dpi: int = DPI) -> Image
     return pil_image
 
 
-def detect_drawing_region(img: Image.Image) -> tuple[int, int, int, int]:
+# =============================================================================
+# NEW APPROACH: Extract and Rebuild
+# =============================================================================
+
+def label_connected_components(binary_mask: np.ndarray) -> Tuple[np.ndarray, int]:
     """
-    WHITELIST APPROACH: Detect the main technical drawing region.
+    Label connected components in a binary mask using iterative flood-fill.
 
-    Instead of trying to detect what to REMOVE (blacklist), we detect what to KEEP.
-    The technical drawing is the largest dense cluster of lines/shapes on the page.
-    Everything outside this region will be white-filled.
-
-    Returns (x1, y1, x2, y2) bounding box of the drawing area.
-    """
-    import numpy as np
-
-    width, height = img.size
-
-    # Convert to grayscale
-    gray = np.array(img.convert('L'))
-
-    # Threshold: pixels darker than 240 are considered "content"
-    # (lines, text, shapes - anything that's not pure white background)
-    content_mask = gray < 240
-
-    # Find coordinates of all content pixels
-    content_coords = np.where(content_mask)
-
-    if len(content_coords[0]) == 0:
-        # No content found - return full page minus small margin
-        margin = int(min(width, height) * 0.02)
-        return (margin, margin, width - margin, height - margin)
-
-    # Get bounding box of ALL content
-    y_coords = content_coords[0]
-    x_coords = content_coords[1]
-
-    # Simple approach: find the bounding box of all content
-    # Then we'll refine by looking at content density
-    raw_x1, raw_x2 = int(np.min(x_coords)), int(np.max(x_coords))
-    raw_y1, raw_y2 = int(np.min(y_coords)), int(np.max(y_coords))
-
-    # Divide the image into a grid to analyze content density
-    # This helps distinguish the main drawing from title blocks/notes
-    grid_size = 20  # 20x20 grid
-    cell_h = height // grid_size
-    cell_w = width // grid_size
-
-    # Calculate density for each cell
-    density_grid = np.zeros((grid_size, grid_size))
-    for gy in range(grid_size):
-        for gx in range(grid_size):
-            y1 = gy * cell_h
-            y2 = min((gy + 1) * cell_h, height)
-            x1 = gx * cell_w
-            x2 = min((gx + 1) * cell_w, width)
-
-            cell = content_mask[y1:y2, x1:x2]
-            if cell.size > 0:
-                density_grid[gy, gx] = np.sum(cell) / cell.size
-
-    # Find cells with significant content (> 1% dark pixels)
-    # Technical drawings have thin lines so even 1% is significant
-    significant_threshold = 0.01
-    significant_cells = density_grid > significant_threshold
-
-    # Find the bounding box of significant cells
-    sig_coords = np.where(significant_cells)
-
-    if len(sig_coords[0]) == 0:
-        # Fall back to raw bounding box
-        x1, y1, x2, y2 = raw_x1, raw_y1, raw_x2, raw_y2
-    else:
-        # Get grid cell bounds
-        grid_y1, grid_y2 = int(np.min(sig_coords[0])), int(np.max(sig_coords[0]))
-        grid_x1, grid_x2 = int(np.min(sig_coords[1])), int(np.max(sig_coords[1]))
-
-        # Convert back to pixel coordinates
-        x1 = grid_x1 * cell_w
-        y1 = grid_y1 * cell_h
-        x2 = min((grid_x2 + 1) * cell_w, width)
-        y2 = min((grid_y2 + 1) * cell_h, height)
-
-    # Refine: within this region, find the actual content bounds
-    # This removes empty space within the grid cells
-    region_mask = content_mask[y1:y2, x1:x2]
-    region_coords = np.where(region_mask)
-
-    if len(region_coords[0]) > 0:
-        inner_y1 = int(np.min(region_coords[0]))
-        inner_y2 = int(np.max(region_coords[0]))
-        inner_x1 = int(np.min(region_coords[1]))
-        inner_x2 = int(np.max(region_coords[1]))
-
-        # Adjust to absolute coordinates
-        x1 = x1 + inner_x1
-        y1 = y1 + inner_y1
-        x2 = x1 + (inner_x2 - inner_x1)
-        y2 = y1 + (inner_y2 - inner_y1)
-
-    # Add margin around the detected region (3% of page dimensions)
-    # This ensures we don't clip any part of the drawing
-    margin_x = int(width * 0.03)
-    margin_y = int(height * 0.03)
-
-    x1 = max(0, x1 - margin_x)
-    y1 = max(0, y1 - margin_y)
-    x2 = min(width, x2 + margin_x)
-    y2 = min(height, y2 + margin_y)
-
-    return (x1, y1, x2, y2)
-
-
-def white_fill_outside_region(img: Image.Image, keep_region: tuple[int, int, int, int]) -> Image.Image:
-    """
-    White-fill everything OUTSIDE the specified region.
-    This is the core of the whitelist approach.
+    Uses numpy only (no OpenCV or scikit-image).
 
     Args:
-        img: Source image
-        keep_region: (x1, y1, x2, y2) bounding box to KEEP
+        binary_mask: 2D boolean array where True = foreground pixel
 
     Returns:
-        Image with everything outside keep_region white-filled
+        labels: 2D array of same shape with component labels (0 = background)
+        num_labels: Number of unique labels (excluding background)
+    """
+    height, width = binary_mask.shape
+    labels = np.zeros((height, width), dtype=np.int32)
+    current_label = 0
+
+    # Find all foreground pixels
+    foreground_coords = np.argwhere(binary_mask)
+
+    if len(foreground_coords) == 0:
+        return labels, 0
+
+    # Create a set of unlabeled foreground pixels for fast lookup
+    unlabeled = set(map(tuple, foreground_coords))
+
+    while unlabeled:
+        # Start a new component
+        current_label += 1
+        seed = unlabeled.pop()
+
+        # BFS flood fill
+        queue = [seed]
+        labels[seed[0], seed[1]] = current_label
+
+        while queue:
+            y, x = queue.pop(0)
+
+            # Check 8-connected neighbors
+            for dy in [-1, 0, 1]:
+                for dx in [-1, 0, 1]:
+                    if dy == 0 and dx == 0:
+                        continue
+
+                    ny, nx = y + dy, x + dx
+
+                    if (ny, nx) in unlabeled:
+                        unlabeled.remove((ny, nx))
+                        labels[ny, nx] = current_label
+                        queue.append((ny, nx))
+
+    return labels, current_label
+
+
+def get_component_bboxes(labels: np.ndarray, num_labels: int) -> List[Tuple[int, int, int, int, int]]:
+    """
+    Get bounding boxes for each labeled component.
+
+    Returns:
+        List of (x1, y1, x2, y2, pixel_count) for each component
+    """
+    bboxes = []
+
+    for label_id in range(1, num_labels + 1):
+        coords = np.argwhere(labels == label_id)
+        if len(coords) == 0:
+            continue
+
+        y_coords = coords[:, 0]
+        x_coords = coords[:, 1]
+
+        x1 = int(np.min(x_coords))
+        y1 = int(np.min(y_coords))
+        x2 = int(np.max(x_coords))
+        y2 = int(np.max(y_coords))
+        pixel_count = len(coords)
+
+        bboxes.append((x1, y1, x2, y2, pixel_count))
+
+    return bboxes
+
+
+def cluster_nearby_components(
+    bboxes: List[Tuple[int, int, int, int, int]],
+    page_width: int,
+    page_height: int,
+    distance_threshold: float = 0.015
+) -> List[List[int]]:
+    """
+    Group nearby bounding boxes into clusters.
+
+    Two components belong to the same cluster if they are within
+    distance_threshold * page_size of each other.
+
+    Args:
+        bboxes: List of (x1, y1, x2, y2, pixel_count) tuples
+        page_width: Width of the page in pixels
+        page_height: Height of the page in pixels
+        distance_threshold: Max distance as fraction of page size (default 1.5%)
+
+    Returns:
+        List of clusters, where each cluster is a list of bbox indices
+    """
+    if not bboxes:
+        return []
+
+    n = len(bboxes)
+    max_dist = max(page_width, page_height) * distance_threshold
+
+    # Union-Find for clustering
+    parent = list(range(n))
+
+    def find(x):
+        if parent[x] != x:
+            parent[x] = find(parent[x])
+        return parent[x]
+
+    def union(x, y):
+        px, py = find(x), find(y)
+        if px != py:
+            parent[px] = py
+
+    # Check distances between all pairs of bounding boxes
+    for i in range(n):
+        x1_i, y1_i, x2_i, y2_i, _ = bboxes[i]
+        center_i = ((x1_i + x2_i) / 2, (y1_i + y2_i) / 2)
+
+        for j in range(i + 1, n):
+            x1_j, y1_j, x2_j, y2_j, _ = bboxes[j]
+            center_j = ((x1_j + x2_j) / 2, (y1_j + y2_j) / 2)
+
+            # Calculate minimum distance between bounding boxes
+            # (not center-to-center, but edge-to-edge)
+            dx = max(0, max(x1_i, x1_j) - min(x2_i, x2_j))
+            dy = max(0, max(y1_i, y1_j) - min(y2_i, y2_j))
+            dist = np.sqrt(dx * dx + dy * dy)
+
+            if dist <= max_dist:
+                union(i, j)
+
+    # Group by cluster
+    clusters_dict = {}
+    for i in range(n):
+        root = find(i)
+        if root not in clusters_dict:
+            clusters_dict[root] = []
+        clusters_dict[root].append(i)
+
+    return list(clusters_dict.values())
+
+
+def merge_cluster_bboxes(
+    bboxes: List[Tuple[int, int, int, int, int]],
+    cluster: List[int]
+) -> Tuple[int, int, int, int, int]:
+    """
+    Merge bounding boxes of all components in a cluster.
+
+    Returns:
+        (x1, y1, x2, y2, total_pixel_count)
+    """
+    x1 = min(bboxes[i][0] for i in cluster)
+    y1 = min(bboxes[i][1] for i in cluster)
+    x2 = max(bboxes[i][2] for i in cluster)
+    y2 = max(bboxes[i][3] for i in cluster)
+    total_pixels = sum(bboxes[i][4] for i in cluster)
+
+    return (x1, y1, x2, y2, total_pixels)
+
+
+def filter_drawing_views(
+    cluster_bboxes: List[Tuple[int, int, int, int, int]],
+    page_width: int,
+    page_height: int
+) -> List[Tuple[int, int, int, int, int]]:
+    """
+    Filter clusters to keep only likely drawing views.
+
+    Removes:
+    - Clusters too small to be real drawing views (< 0.5% of page area)
+    - Clusters in title block zone (bottom 20%, right 45%) with high density
+    - Clusters that look like text (very elongated with high density)
+
+    Keeps everything else - when in doubt, keep it.
+    """
+    page_area = page_width * page_height
+    min_area = page_area * 0.005  # 0.5% of page area
+
+    kept_views = []
+
+    for bbox in cluster_bboxes:
+        x1, y1, x2, y2, pixel_count = bbox
+        bbox_width = x2 - x1
+        bbox_height = y2 - y1
+        bbox_area = bbox_width * bbox_height
+
+        if bbox_area == 0:
+            continue
+
+        # Filter 1: Too small (< 0.5% of page)
+        if bbox_area < min_area:
+            continue
+
+        # Calculate fill ratio (how dense is the content within bbox)
+        fill_ratio = pixel_count / bbox_area if bbox_area > 0 else 0
+
+        # Calculate center position (normalized 0-1)
+        center_x = (x1 + x2) / 2 / page_width
+        center_y = (y1 + y2) / 2 / page_height
+
+        # Filter 2: Title block zone detection
+        # Title blocks are typically in bottom-right corner
+        # Bottom 20% of page AND right 45% AND dense (>15% fill)
+        in_title_block_zone = (center_y > 0.80) and (center_x > 0.55)
+        is_dense = fill_ratio > 0.15
+
+        if in_title_block_zone and is_dense:
+            continue
+
+        # Filter 3: Text-like shapes (very elongated with high density)
+        # Table rows, text lines have extreme aspect ratios
+        aspect_ratio = bbox_width / bbox_height if bbox_height > 0 else 1
+
+        is_text_like = (
+            (aspect_ratio > 8 or aspect_ratio < 0.125) and  # Very elongated
+            fill_ratio > 0.15 and  # Dense
+            bbox_area < page_area * 0.02  # And relatively small
+        )
+
+        if is_text_like:
+            continue
+
+        # Filter 4: Edge elements (frame borders, margin content)
+        # If mostly in the outer 5% margin and very thin
+        in_margin = (
+            (center_x < 0.05 or center_x > 0.95 or center_y < 0.05 or center_y > 0.95) and
+            (bbox_width < page_width * 0.03 or bbox_height < page_height * 0.03)
+        )
+
+        if in_margin:
+            continue
+
+        # Keep this cluster as a drawing view
+        kept_views.append(bbox)
+
+    return kept_views
+
+
+def detect_drawing_views(img: Image.Image) -> List[DrawingView]:
+    """
+    Detect individual drawing views on a PDF page.
+
+    Uses connected component analysis and clustering to find
+    separate drawing views (front, side, top, section views, etc.)
+
+    Args:
+        img: PIL Image of the rendered PDF page (RGB, 300 DPI)
+
+    Returns:
+        List of DrawingView objects, each containing a cropped view
     """
     width, height = img.size
-    x1, y1, x2, y2 = keep_region
 
-    # Create a new white image
-    result = Image.new('RGB', (width, height), 'white')
+    # Step 1: Convert to grayscale and threshold to binary
+    gray = np.array(img.convert('L'))
+    binary = gray < 200  # Pixels darker than 200 are "content"
 
-    # Paste the region we want to keep
-    # Ensure coordinates are valid
-    x1 = max(0, min(x1, width))
-    y1 = max(0, min(y1, height))
-    x2 = max(0, min(x2, width))
-    y2 = max(0, min(y2, height))
+    # Step 2: Remove border lines (outer 3% of each edge)
+    border_x = int(width * 0.03)
+    border_y = int(height * 0.03)
+    binary[:border_y, :] = False  # Top border
+    binary[-border_y:, :] = False  # Bottom border
+    binary[:, :border_x] = False  # Left border
+    binary[:, -border_x:] = False  # Right border
 
-    if x2 > x1 and y2 > y1:
-        # Crop the region to keep from the original
-        region_to_keep = img.crop((x1, y1, x2, y2))
-        # Paste it onto the white background
-        result.paste(region_to_keep, (x1, y1))
+    # Step 3: Label connected components
+    labels, num_labels = label_connected_components(binary)
+
+    if num_labels == 0:
+        # No content found - return empty
+        return []
+
+    # Step 4: Get bounding boxes for each component
+    component_bboxes = get_component_bboxes(labels, num_labels)
+
+    if not component_bboxes:
+        return []
+
+    # Step 5: Cluster nearby components
+    clusters = cluster_nearby_components(component_bboxes, width, height)
+
+    # Step 6: Merge clusters into single bounding boxes
+    cluster_bboxes = [
+        merge_cluster_bboxes(component_bboxes, cluster)
+        for cluster in clusters
+    ]
+
+    # Step 7: Filter to keep only drawing views
+    view_bboxes = filter_drawing_views(cluster_bboxes, width, height)
+
+    if not view_bboxes:
+        # If all clusters were filtered out, take the largest one as fallback
+        if cluster_bboxes:
+            largest = max(cluster_bboxes, key=lambda b: (b[2]-b[0]) * (b[3]-b[1]))
+            view_bboxes = [largest]
+        else:
+            return []
+
+    # Step 8: Extract each view from the ORIGINAL image
+    views = []
+
+    for bbox in view_bboxes:
+        x1, y1, x2, y2, _ = bbox
+
+        # Add padding (1% of crop size)
+        pad_x = int((x2 - x1) * 0.01)
+        pad_y = int((y2 - y1) * 0.01)
+
+        x1 = max(0, x1 - pad_x)
+        y1 = max(0, y1 - pad_y)
+        x2 = min(width, x2 + pad_x)
+        y2 = min(height, y2 + pad_y)
+
+        # Crop from original RGB image (not binary)
+        cropped = img.crop((x1, y1, x2, y2))
+
+        # Calculate normalized center position
+        center_x = (x1 + x2) / 2 / width
+        center_y = (y1 + y2) / 2 / height
+        area = (x2 - x1) * (y2 - y1)
+
+        view = DrawingView(
+            bbox=(x1, y1, x2, y2),
+            image=cropped,
+            center_x=center_x,
+            center_y=center_y,
+            area=area
+        )
+        views.append(view)
+
+    return views
+
+
+def rebuild_page(
+    views: List[DrawingView],
+    page_width: int,
+    page_height: int,
+    footer_height_ratio: float = FOOTER_RATIO
+) -> Image.Image:
+    """
+    Rebuild detected views on a blank white page.
+
+    Preserves the original relative positions of views (front view below
+    top view, side view to the right, etc.) and scales to fill available space.
+
+    Args:
+        views: List of DrawingView objects to place
+        page_width: Width of the output page in pixels
+        page_height: Height of the output page in pixels
+        footer_height_ratio: Fraction of page height reserved for footer
+
+    Returns:
+        New white image with views placed on it
+    """
+    # Create blank white page
+    result = Image.new('RGB', (page_width, page_height), 'white')
+
+    if not views:
+        return result
+
+    # Calculate available area (above footer)
+    footer_height = int(page_height * footer_height_ratio)
+    available_height = page_height - footer_height
+    available_width = page_width
+
+    # Add margins (2% on each side)
+    margin_x = int(page_width * 0.02)
+    margin_y = int(available_height * 0.02)
+
+    content_width = available_width - 2 * margin_x
+    content_height = available_height - 2 * margin_y
+
+    if len(views) == 1:
+        # Single view: center it in available space
+        view = views[0]
+        img = view.image
+
+        # Calculate scale to fit in available area while preserving aspect ratio
+        scale_x = content_width / img.width
+        scale_y = content_height / img.height
+        scale = min(scale_x, scale_y, 1.0)  # Don't upscale
+
+        new_width = int(img.width * scale)
+        new_height = int(img.height * scale)
+
+        if scale < 1.0:
+            img = img.resize((new_width, new_height), Image.LANCZOS)
+
+        # Center in available area
+        paste_x = margin_x + (content_width - new_width) // 2
+        paste_y = footer_height + margin_y + (content_height - new_height) // 2
+
+        result.paste(img, (paste_x, paste_y))
+
+    else:
+        # Multiple views: preserve relative positions
+
+        # Find bounding box of all views' original positions
+        min_cx = min(v.center_x for v in views)
+        max_cx = max(v.center_x for v in views)
+        min_cy = min(v.center_y for v in views)
+        max_cy = max(v.center_y for v in views)
+
+        # Calculate the span of views in original coordinates
+        span_x = max_cx - min_cx if max_cx > min_cx else 1.0
+        span_y = max_cy - min_cy if max_cy > min_cy else 1.0
+
+        # Calculate total size of all views if placed with original relative positions
+        # We need to figure out the bounding box of placed views
+        total_width = 0
+        total_height = 0
+        for v in views:
+            # Normalize position to 0-1 within the span
+            rel_x = (v.center_x - min_cx) / span_x if span_x > 0 else 0.5
+            rel_y = (v.center_y - min_cy) / span_y if span_y > 0 else 0.5
+
+            # Calculate extent
+            right = rel_x * content_width + v.image.width / 2
+            bottom = rel_y * content_height + v.image.height / 2
+            total_width = max(total_width, right)
+            total_height = max(total_height, bottom)
+
+        # Calculate scale to fit all views
+        scale_x = content_width / total_width if total_width > 0 else 1.0
+        scale_y = content_height / total_height if total_height > 0 else 1.0
+        scale = min(scale_x, scale_y, 1.0)
+
+        # Place each view
+        for v in views:
+            img = v.image
+
+            # Scale the view image
+            new_width = int(img.width * scale)
+            new_height = int(img.height * scale)
+
+            if scale < 1.0 and new_width > 0 and new_height > 0:
+                img = img.resize((new_width, new_height), Image.LANCZOS)
+
+            # Calculate position based on relative coordinates
+            rel_x = (v.center_x - min_cx) / span_x if span_x > 0 else 0.5
+            rel_y = (v.center_y - min_cy) / span_y if span_y > 0 else 0.5
+
+            # Position in content area (note: y is inverted - lower center_y = higher on page)
+            center_x = margin_x + int(rel_x * content_width * scale)
+            center_y = footer_height + margin_y + int((1 - rel_y) * content_height * scale)
+
+            paste_x = center_x - new_width // 2
+            paste_y = center_y - new_height // 2
+
+            # Clamp to valid positions
+            paste_x = max(0, min(paste_x, page_width - new_width))
+            paste_y = max(footer_height, min(paste_y, page_height - new_height))
+
+            result.paste(img, (paste_x, paste_y))
 
     return result
 
 
-def create_footer_overlay(
-    page_width: float,
-    page_height: float,
+def add_footer_to_image(
+    img: Image.Image,
     plan_id: str,
     zip_name: str,
     extracted_data: ExtractedData,
     output_path: Path
 ) -> Path:
-    """Create a PDF overlay with the USI-PRO footer."""
-    footer_height = page_height * FOOTER_RATIO
-    footer_y = 0  # Start from bottom
-
-    # Create canvas
-    c = canvas.Canvas(str(output_path), pagesize=(page_width, page_height))
-
-    # Footer area starts at bottom
-    margin = 10
-
-    # LEFT ZONE - Plan ID
-    left_x = margin + 20
-
-    # ZIP name in small black text above plan ID
-    c.setFont("Helvetica", 6)
-    c.setFillColor(black)
-    c.drawString(left_x, footer_y + footer_height * 0.65, zip_name)
-
-    # Plan ID in red bold
-    c.setFont("Helvetica-Bold", 14)
-    c.setFillColor(red)
-    c.drawString(left_x, footer_y + footer_height * 0.25, plan_id)
-
-    # CENTER ZONE - Logo
-    if LOGO_PATH.exists():
-        logo = ImageReader(str(LOGO_PATH))
-        logo_width = 80
-        logo_height = 25
-        logo_x = (page_width - logo_width) / 2
-        logo_y = footer_y + (footer_height - logo_height) / 2
-        c.drawImage(logo, logo_x, logo_y, width=logo_width, height=logo_height,
-                   preserveAspectRatio=True, mask='auto')
-
-    # RIGHT ZONE - Data Table
-    table_right = page_width - margin - 20
-    table_width = 180
-    table_left = table_right - table_width
-    row_height = footer_height * 0.22
-    col_width = table_width / 2
-
-    # Table data
-    rows = [
-        ("DRAWING NO.", extracted_data.drawing_no),
-        ("DESIGNATION", extracted_data.designation[:25] + "..." if len(extracted_data.designation) > 25 else extracted_data.designation),
-        ("MATERIAL / STANDARD", extracted_data.material[:20] + "..." if len(extracted_data.material) > 20 else extracted_data.material),
-        ("FINISH", extracted_data.finish[:20] + "..." if len(extracted_data.finish) > 20 else extracted_data.finish),
-    ]
-
-    # Draw table
-    c.setStrokeColor(HexColor("#CCCCCC"))
-    c.setLineWidth(0.4)
-
-    for i, (label, value) in enumerate(rows):
-        row_y = footer_y + footer_height - (i + 1) * row_height
-
-        # Header cell (gray background)
-        c.setFillColor(HexColor("#E5E5E5"))
-        c.rect(table_left, row_y, col_width, row_height, fill=1, stroke=1)
-
-        # Value cell (white background)
-        c.setFillColor(white)
-        c.rect(table_left + col_width, row_y, col_width, row_height, fill=1, stroke=1)
-
-        # Label text
-        c.setFillColor(black)
-        c.setFont("Helvetica", 5)
-        c.drawString(table_left + 2, row_y + row_height * 0.35, label)
-
-        # Value text
-        c.setFont("Helvetica", 5)
-        c.drawString(table_left + col_width + 2, row_y + row_height * 0.35, value)
-
-    c.save()
-    return output_path
-
-
-def anonymize_page(
-    pdf_path: Path,
-    page_num: int,
-    plan_id: str,
-    zip_name: str,
-    extracted_data: ExtractedData,
-    output_path: Path
-) -> Path:
-    """Anonymize a single PDF page and save as new PDF.
-
-    WHITELIST APPROACH:
-    Instead of trying to detect and remove specific elements (blacklist),
-    we detect the main technical drawing region and keep ONLY that.
-    Everything else is automatically white-filled.
-
-    This works regardless of client format because technical drawings
-    share common characteristics: dense clusters of lines, dimensions,
-    and geometric shapes in the center area of the page.
     """
-    # Step 1: Render page to high-res image (300 DPI)
-    img = render_page_to_image(pdf_path, page_num, DPI)
+    Add USI-PRO footer to an image and save as PDF.
 
-    # Step 2: WHITELIST APPROACH - Detect the drawing region to KEEP
-    # This finds the bounding box of the main technical drawing content
-    drawing_region = detect_drawing_region(img)
-
-    # Step 3: White-fill everything OUTSIDE the drawing region
-    # This automatically removes: title blocks, logos, company names,
-    # BOM tables, revision tables, notes, stamps, frame borders, etc.
-    img = white_fill_outside_region(img, drawing_region)
-
-    # Step 4: Calculate page dimensions
+    Footer has three zones:
+    - Left: Plan ID (red) with ZIP name above
+    - Center: USI-PRO logo
+    - Right: Data table (drawing no, designation, material, finish)
+    """
     page_width = img.width * 72 / DPI
     page_height = img.height * 72 / DPI
-
-    # Step 5: Create the final PDF with image and footer
-    c = canvas.Canvas(str(output_path), pagesize=(page_width, page_height))
-
-    # Calculate footer height
     footer_height = page_height * FOOTER_RATIO
 
-    # Draw the anonymized image (scaled to fit above footer)
-    drawing_height = page_height - footer_height
+    # Create PDF canvas
+    c = canvas.Canvas(str(output_path), pagesize=(page_width, page_height))
 
-    # Save image temporarily
+    # Save image temporarily for embedding
     with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
         img.save(tmp.name, 'PNG')
         temp_img_path = tmp.name
 
     try:
-        # Draw image above footer area
+        # Draw the image
         c.drawImage(
             temp_img_path,
-            0,
-            footer_height,
+            0, 0,
             width=page_width,
-            height=drawing_height,
+            height=page_height,
             preserveAspectRatio=True,
-            anchor='c'
+            anchor='sw'
         )
     finally:
         os.unlink(temp_img_path)
 
-    # Draw footer
+    # Draw footer background (optional: light line at top of footer)
+    c.setStrokeColor(HexColor("#CCCCCC"))
+    c.setLineWidth(0.3)
+    c.line(0, footer_height, page_width, footer_height)
+
     margin = 10
 
     # LEFT ZONE - Plan ID
     left_x = margin + 20
 
-    # ZIP name in small black text above plan ID
+    # ZIP name in small black text
     c.setFont("Helvetica", 6)
     c.setFillColor(black)
     c.drawString(left_x, footer_height * 0.65, zip_name)
@@ -641,6 +883,40 @@ def anonymize_page(
         c.drawString(table_left + col_width + 2, row_y + row_height * 0.35, value)
 
     c.save()
+    return output_path
+
+
+def anonymize_page(
+    pdf_path: Path,
+    page_num: int,
+    plan_id: str,
+    zip_name: str,
+    extracted_data: ExtractedData,
+    output_path: Path
+) -> Path:
+    """
+    Anonymize a single PDF page using the EXTRACT AND REBUILD approach.
+
+    Steps:
+    1. Render page to high-res image (300 DPI)
+    2. Detect individual drawing views (clusters of geometry)
+    3. Extract each view from the original image
+    4. Rebuild views on a blank white page, preserving relative positions
+    5. Add USI-PRO footer (plan ID, logo, data table)
+    """
+    # Step 1: Render page to high-res image
+    img = render_page_to_image(pdf_path, page_num, DPI)
+    page_width, page_height = img.size
+
+    # Step 2: Detect drawing views
+    views = detect_drawing_views(img)
+
+    # Step 3 & 4: Rebuild on blank page (extraction happens in detect_drawing_views)
+    rebuilt_img = rebuild_page(views, page_width, page_height)
+
+    # Step 5: Add footer and save as PDF
+    add_footer_to_image(rebuilt_img, plan_id, zip_name, extracted_data, output_path)
+
     return output_path
 
 
@@ -860,17 +1136,22 @@ Examples:
     elif input_path.is_dir():
         # Batch process all ZIPs in directory
         zip_files = list(input_path.glob("*.zip")) + list(input_path.glob("*.ZIP"))
+        pdf_files = list(input_path.glob("*.pdf")) + list(input_path.glob("*.PDF"))
 
-        if not zip_files:
-            print(f"No ZIP files found in {input_path}")
+        if not zip_files and not pdf_files:
+            print(f"No ZIP or PDF files found in {input_path}")
             sys.exit(1)
 
-        print(f"Found {len(zip_files)} ZIP file(s) to process")
+        total_files = len(zip_files) + len(pdf_files)
+        print(f"Found {total_files} file(s) to process ({len(zip_files)} ZIPs, {len(pdf_files)} PDFs)")
 
         for zip_file in zip_files:
             process_zip(zip_file, output_dir)
 
-        print(f"\nAll done! Processed {len(zip_files)} archives.")
+        for pdf_file in pdf_files:
+            process_single_pdf(pdf_file, output_dir, None)
+
+        print(f"\nAll done! Processed {total_files} files.")
 
     else:
         print(f"Error: Invalid input: {input_path}")
