@@ -116,9 +116,22 @@ function viewFile(filename) {
     viewerActions.style.display = 'flex';
     downloadLink.href = '/output/' + filename;
 
+    // Add or update Edit button for PDFs
+    let editLink = document.getElementById('edit-link');
     if (filename.endsWith('.pdf')) {
+        if (!editLink) {
+            editLink = document.createElement('a');
+            editLink.id = 'edit-link';
+            editLink.className = 'edit-btn';
+            editLink.textContent = '✏️ Edit';
+            viewerActions.insertBefore(editLink, downloadLink);
+        }
+        editLink.href = '/editor.html?file=' + encodeURIComponent(filename);
+        editLink.style.display = 'inline-block';
+
         viewerBody.innerHTML = `<iframe src="/output/${filename}#toolbar=1&navpanes=0"></iframe>`;
     } else {
+        if (editLink) editLink.style.display = 'none';
         viewerBody.innerHTML = `
             <div class="viewer-placeholder">
                 <div class="icon">&#128230;</div>

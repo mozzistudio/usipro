@@ -423,3 +423,207 @@ body.viewer-page {
     top: 0;
     left: 0;
 }
+
+/* Editor Page Styles */
+body.editor-page {
+    background: #2d2d2d;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.toolbar-center {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.edit-mode-toggle {
+    display: flex;
+    gap: 5px;
+}
+
+.tool-btn {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 8px 12px;
+    background: #3d3d3d;
+    color: #ccc;
+    border: 1px solid #555;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 0.85em;
+    transition: all 0.2s ease;
+}
+
+.tool-btn:hover {
+    background: #4d4d4d;
+    color: white;
+}
+
+.tool-btn.active {
+    background: #e63946;
+    color: white;
+    border-color: #e63946;
+}
+
+.tool-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.tool-btn .icon {
+    font-size: 1em;
+}
+
+.toolbar-actions .primary {
+    background: #28a745;
+}
+
+.toolbar-actions .primary:hover {
+    background: #218838;
+}
+
+.editor-container {
+    flex: 1;
+    display: flex;
+    overflow: hidden;
+}
+
+.editor-sidebar {
+    width: 250px;
+    background: #1a1a2e;
+    padding: 15px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.sidebar-section h3 {
+    color: #e63946;
+    font-size: 0.9em;
+    margin-bottom: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.instructions-list {
+    color: #aaa;
+    font-size: 0.85em;
+    padding-left: 20px;
+    line-height: 1.8;
+}
+
+.instructions-list li {
+    margin-bottom: 5px;
+}
+
+#sensitivity {
+    width: 100%;
+    margin: 10px 0;
+}
+
+.range-labels {
+    display: flex;
+    justify-content: space-between;
+    color: #666;
+    font-size: 0.75em;
+}
+
+.history-list {
+    max-height: 200px;
+    overflow-y: auto;
+    background: #0d0d15;
+    border-radius: 5px;
+    padding: 10px;
+}
+
+.empty-history {
+    color: #555;
+    font-size: 0.85em;
+    text-align: center;
+    padding: 20px 0;
+}
+
+.history-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px;
+    color: #aaa;
+    font-size: 0.8em;
+    border-bottom: 1px solid #1a1a2e;
+}
+
+.history-item:last-child {
+    border-bottom: none;
+}
+
+.history-icon {
+    font-size: 1em;
+}
+
+.editor-main {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: auto;
+    padding: 20px;
+}
+
+.canvas-container {
+    position: relative;
+    background: #525659;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+    border-radius: 5px;
+    overflow: hidden;
+}
+
+#pdf-canvas {
+    display: block;
+}
+
+#overlay-canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    cursor: crosshair;
+}
+
+.loading-overlay,
+.processing-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0,0,0,0.8);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    gap: 15px;
+}
+
+.spinner.large {
+    width: 40px;
+    height: 40px;
+    border-width: 3px;
+    border-color: #e63946;
+    border-top-color: transparent;
+}
+
+/* Edit button in viewer */
+.viewer-actions .edit-btn {
+    background: #ffc107;
+    color: #333;
+}
+
+.viewer-actions .edit-btn:hover {
+    background: #e0a800;
+}

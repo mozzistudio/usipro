@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>USI-PRO Editor</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body class="editor-page">
+    <div class="toolbar">
+        <div class="toolbar-left">
+            <a href="/">&larr; Back</a>
+            <h1 id="filename-display">Loading...</h1>
+        </div>
+        <div class="toolbar-center">
+            <div class="edit-mode-toggle">
+                <button id="edit-mode-btn" class="tool-btn active" title="Edit Mode - Click to delete zones">
+                    <span class="icon">✏️</span> Edit Mode
+                </button>
+                <button id="undo-btn" class="tool-btn" title="Undo last deletion" disabled>
+                    <span class="icon">↩️</span> Undo
+                </button>
+            </div>
+        </div>
+        <div class="toolbar-actions">
+            <a href="#" id="save-btn" class="primary">Save PDF</a>
+            <a href="#" id="download-btn" download>Download</a>
+            <a href="/" class="secondary">Upload New</a>
+        </div>
+    </div>
+
+    <div class="editor-container">
+        <div class="editor-sidebar">
+            <div class="sidebar-section">
+                <h3>Instructions</h3>
+                <ol class="instructions-list">
+                    <li>Click on any element to delete it</li>
+                    <li>AI will detect the zone boundary</li>
+                    <li>Use Undo if needed</li>
+                    <li>Save when done</li>
+                </ol>
+            </div>
+            <div class="sidebar-section">
+                <h3>Detection Sensitivity</h3>
+                <input type="range" id="sensitivity" min="1" max="10" value="5">
+                <div class="range-labels">
+                    <span>Precise</span>
+                    <span>Wide</span>
+                </div>
+            </div>
+            <div class="sidebar-section">
+                <h3>History</h3>
+                <div id="history-list" class="history-list">
+                    <div class="empty-history">No edits yet</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="editor-main">
+            <div class="canvas-container" id="canvas-container">
+                <canvas id="pdf-canvas"></canvas>
+                <canvas id="overlay-canvas"></canvas>
+                <div id="loading-overlay" class="loading-overlay">
+                    <div class="spinner large"></div>
+                    <p>Loading PDF...</p>
+                </div>
+                <div id="processing-overlay" class="processing-overlay" style="display: none;">
+                    <div class="spinner large"></div>
+                    <p>AI detecting zone...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/editor.js"></script>
+</body>
+</html>
