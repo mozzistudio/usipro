@@ -2,14 +2,17 @@
 """
 USI-PRO Technical Drawing Anonymization Pipeline
 
-This script anonymizes technical drawings by extracting clean drawing views
-and rebuilding them on blank pages, removing all proprietary information
-(logos, title blocks, company names) while preserving technical content
-(geometry, dimensions, tolerances) and adding standardized USI-PRO branding.
+This script anonymizes technical drawings by detecting and removing proprietary
+information (logos, title blocks, company names, designer names) while preserving
+technical content (geometry, dimensions, tolerances) and adding standardized
+USI-PRO branding.
 
-APPROACH: Extract and Rebuild
-Instead of trying to detect what to remove (blacklist), we extract individual
-drawing views and rebuild them on a clean white page.
+APPROACH: Region Detection and White-Fill
+1. Detect title block region (bottom portion of page with dense text/lines)
+2. Extract technical data BEFORE deletion (drawing no, designation, material, finish)
+3. White-fill the title block and other proprietary regions
+4. Remove margin text, logos, notes boxes with company info
+5. Add USI-PRO footer with extracted data
 
 Usage:
     python anonymize.py input/454323.zip           # Process a ZIP file
@@ -38,6 +41,14 @@ from reportlab.pdfgen import canvas
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.utils import ImageReader
+
+# Try to import pytesseract for OCR (optional)
+try:
+    import pytesseract
+    HAS_OCR = True
+except ImportError:
+    HAS_OCR = False
+    print("Note: pytesseract not installed. OCR for scanned documents disabled.")
 
 # Constants
 DPI = 300
@@ -151,31 +162,61 @@ def extract_drawing_data(text: str) -> ExtractedData:
     text_upper = text.upper()
     lines = text.split('\n')
 
-    # Common patterns for data extraction
+    # Common patterns for data extraction (French + English + German)
     patterns = {
         'drawing_no': [
-            r'(?:DRAWING\s*(?:NO\.?|NUMBER)|PLAN\s*(?:NO\.?|N°)|REF(?:ERENCE)?|N°\s*PLAN|DWG\s*NO\.?)\s*[:\s]*([A-Z0-9][-A-Z0-9_.]+)',
-            r'(?:^|\s)(\d{4,6})(?:\s|$)',  # 4-6 digit numbers that could be plan IDs
+            # French patterns
+            r'(?:NUMERO|NUMÉRO|N°)\s*[:\s]*(\d[\d\s]{4,})',  # NUMERO: 10 002 834
+            r'(?:N°\s*PLAN|PLAN\s*N°)\s*[:\s]*([A-Z0-9][-A-Z0-9_.]+)',
+            r'(?:REF(?:ERENCE)?|RÉFÉRENCE)\s*[:\s]*([A-Z0-9][-A-Z0-9_.]+)',
+            # English patterns
+            r'(?:DRAWING\s*(?:NO\.?|NUMBER)|DWG\s*(?:NO\.?|#))\s*[:\s]*([A-Z0-9][-A-Z0-9_.]+)',
+            r'(?:PART\s*(?:NO\.?|NUMBER|#))\s*[:\s]*([A-Z0-9][-A-Z0-9_.]+)',
+            # Document ID patterns (AXXXXXX-XXX format)
+            r'\b(A\d{5,6}[-_]\d{2,4})\b',
+            # Fallback: 4-8 digit numbers with optional spaces
+            r'(?:^|\s)(\d{2,3}\s+\d{3}\s+\d{3})(?:\s|$)',  # 10 002 834 format
         ],
         'designation': [
-            r'(?:DESIGNATION|DESCRIPTION|TITLE|DÉNOMINATION|NOM)\s*[:\s]*([A-ZÀ-Ü][A-ZÀ-Ü0-9\s\-_.]+)',
+            # French patterns
+            r'(?:PRODUIT|PRODUCT)\s*[:\s]*([A-ZÀ-Ü][A-ZÀ-Ü0-9\s\-_.]+)',
+            r'(?:DESIGNATION|DÉSIGNATION)\s*[:\s]*([A-ZÀ-Ü][A-ZÀ-Ü0-9\s\-_.]+)',
+            r'(?:DÉNOMINATION|DENOMINATION)\s*[:\s]*([A-ZÀ-Ü][A-ZÀ-Ü0-9\s\-_.]+)',
+            # English patterns
+            r'(?:DESCRIPTION|TITLE|NAME)\s*[:\s]*([A-ZÀ-Ü][A-ZÀ-Ü0-9\s\-_.]+)',
             r'(?:PART\s*NAME|PIECE)\s*[:\s]*([A-ZÀ-Ü][A-ZÀ-Ü0-9\s\-_.]+)',
         ],
         'material': [
-            r'(?:MATERIAL|MATIÈRE|MATIERE|MAT\.?|WERKSTOFF)\s*[:\s]*([A-Z0-9][A-Z0-9\s\-_.]+)',
-            r'(?:EN\s*AW[-\s]?\d+[A-Z0-9\-]*)',
-            r'(?:INOX\s*\d+[A-Z]*)',
-            r'(?:ISO\s*\d+[-\w]*)',
-            r'(?:ALUMINIUM|ALUMINUM|STEEL|STAINLESS|BRASS|BRONZE|COPPER|TITANIUM)',
+            # French patterns
+            r'(?:MATIÈRE|MATIERE|MAT\.?)\s*[:\s]*([A-Z0-9][A-Z0-9\s\-_.]+)',
+            # NOTA section often contains material info
+            r'NOTA[^:]*:\s*(?:-\s*)?(?:MATIÈRE|MATIERE|MAT\.?)\s*[:\s]*([A-ZÀ-Ü][A-ZÀ-Ü0-9\s\-_.]+)',
+            r'(?:Matière|MATIÈRE)\s*[:\s]*([A-Z][A-Z0-9\s\-]+)',
+            # English/German patterns
+            r'(?:MATERIAL|WERKSTOFF)\s*[:\s]*([A-Z0-9][A-Z0-9\s\-_.]+)',
+            # Standards
+            r'(EN\s*AW[-\s]?\d+[A-Z0-9\-]*)',
+            r'(INOX\s*\d+[A-Z]*)',
+            r'(ISO\s*\d+[-\w]*)',
+            # Direct material names
+            r'\b(ALUMINIUM|ALUMINUM|ACIER|STEEL|STAINLESS|INOX|BRASS|LAITON|BRONZE|COPPER|CUIVRE|TITANIUM|TITANE|POM|PEEK|DELRIN|NYLON)\b',
         ],
         'finish': [
-            r'(?:FINISH|FINITION|TRAITEMENT|SURFACE|REVÊTEMENT|REVETEMENT)\s*[:\s]*([A-ZÀ-Ü][A-ZÀ-Ü0-9\s\-_.]+)',
-            r'(?:ANODIS[ÉE]+\s*\w*|ANODIZED\s*\w*)',
-            r'(?:SABLÉ|SANDBLASTED|BEAD\s*BLAST)',
-            r'(?:POLI|POLISHED)',
-            r'(?:CHROMÉ|CHROMED|CHROME)',
-            r'(?:NICKELÉ|NICKELED|NICKEL)',
-            r'(?:PEINT|PAINTED)',
+            # French patterns
+            r'(?:FINITION|TRAITEMENT|TRAITEMENT\s*DE\s*SURFACE)\s*[:\s]*([A-ZÀ-Ü][A-ZÀ-Ü0-9\s\-_.]+)',
+            r'(?:REVÊTEMENT|REVETEMENT)\s*[:\s]*([A-ZÀ-Ü][A-ZÀ-Ü0-9\s\-_.]+)',
+            # English patterns
+            r'(?:FINISH|SURFACE\s*FINISH|COATING)\s*[:\s]*([A-ZÀ-Ü][A-ZÀ-Ü0-9\s\-_.]+)',
+            # Direct finish names
+            r'\b(ANODIS[ÉE]+(?:\s+\w+)?|ANODIZED(?:\s+\w+)?)\b',
+            r'\b(SABLÉ|SANDBLASTED|BEAD\s*BLAST(?:ED)?)\b',
+            r'\b(POLI(?:\s+MIROIR)?|POLISHED|MIRROR\s*POLISH)\b',
+            r'\b(CHROMÉ|CHROMED|CHROME\s*PLAT(?:ED)?)\b',
+            r'\b(NICKELÉ|NICKEL(?:ED)?|NICKEL\s*PLAT(?:ED)?)\b',
+            r'\b(PEINT(?:\s+\w+)?|PAINTED|POWDER\s*COAT(?:ED)?)\b',
+            r'\b(BRUT|RAW|AS\s*MACHINED)\b',
+            r'\b(PASSIV[ÉE]+|PASSIVATED)\b',
+            r'\b(ALODINE|ALODINED|CHROMATE)\b',
         ],
     }
 
@@ -188,11 +229,17 @@ def extract_drawing_data(text: str) -> ExtractedData:
                 # Clean up: take only first line, strip whitespace
                 value = value.split('\n')[0].strip()
                 # Remove trailing keywords that may have been captured
-                for keyword in ['MATERIAL', 'FINISH', 'DESIGNATION', 'DRAWING', 'DESIGNER']:
+                for keyword in ['MATERIAL', 'FINISH', 'DESIGNATION', 'DRAWING', 'DESIGNER',
+                               'MATIERE', 'MATIÈRE', 'FINITION', 'PRODUIT', 'TRAITEMENT']:
                     if value.endswith(keyword):
                         value = value[:-len(keyword)].strip()
+                # Remove leading dashes or colons
+                value = value.lstrip('-: ').strip()
                 if value and len(value) > 1:
-                    # Clean up and translate common terms
+                    # Clean up spaces in numbers (10 002 834 -> 10002834)
+                    if field_name == 'drawing_no':
+                        value = re.sub(r'\s+', '', value)
+                    # Translate common terms
                     value = translate_to_english(value)
                     setattr(data, field_name, value)
                     break
@@ -302,7 +349,249 @@ def render_page_to_image(pdf_path: Path, page_num: int, dpi: int = DPI) -> Image
 
 
 # =============================================================================
-# NEW APPROACH: Extract and Rebuild
+# NEW APPROACH: Region Detection and White-Fill
+# =============================================================================
+
+def detect_title_block_region(img: Image.Image) -> Tuple[int, int, int, int]:
+    """
+    Detect the title block region in a technical drawing.
+
+    Title blocks are typically:
+    - At the bottom of the page (bottom 30-45%)
+    - Full width or right-aligned
+    - Contain dense text and horizontal/vertical lines
+
+    Returns:
+        (x1, y1, x2, y2) bounding box of title block region
+    """
+    width, height = img.size
+    gray = np.array(img.convert('L'))
+
+    # Convert to binary (dark pixels = content)
+    binary = gray < 200
+
+    # Analyze horizontal density profile (sum of dark pixels per row)
+    row_density = np.sum(binary, axis=1)
+
+    # Normalize density
+    max_density = np.max(row_density) if np.max(row_density) > 0 else 1
+    normalized_density = row_density / max_density
+
+    # Find the transition point where density increases significantly
+    # (indicates start of title block from top)
+    # Look in the bottom 50% of the page
+    search_start = int(height * 0.5)
+
+    # Find regions of high density in the bottom half
+    bottom_density = normalized_density[search_start:]
+
+    # Title block typically has consistent high density
+    # Find the first row (from top) in bottom half where density is high
+    threshold = 0.15  # 15% of max density indicates significant content
+
+    title_block_start = height  # Default: no title block
+
+    # Scan from middle of page downward to find where title block starts
+    for i in range(search_start, height):
+        # Check if this row and several below it have high density
+        window = normalized_density[i:min(i+50, height)]
+        if len(window) > 0 and np.mean(window) > threshold:
+            # Check if the region below has consistent density (title block characteristic)
+            below_region = normalized_density[i:height]
+            if np.mean(below_region) > threshold * 0.8:
+                title_block_start = i
+                break
+
+    # Also detect left margin text (vertical text on left side)
+    left_margin_width = int(width * 0.08)  # Check leftmost 8%
+    left_col_density = np.sum(binary[:, :left_margin_width], axis=0)
+    has_left_margin_text = np.max(left_col_density) > height * 0.1
+
+    # Determine title block boundaries
+    # Be aggressive - remove bottom 35-40% minimum for safety
+    min_title_block_height = int(height * 0.35)
+    title_block_start = min(title_block_start, height - min_title_block_height)
+
+    # For full-width title blocks, x1=0, x2=width
+    x1 = 0
+    y1 = title_block_start
+    x2 = width
+    y2 = height
+
+    return (x1, y1, x2, y2)
+
+
+def detect_left_margin_region(img: Image.Image) -> Optional[Tuple[int, int, int, int]]:
+    """
+    Detect proprietary text in the left margin (often vertical company text).
+
+    Returns:
+        (x1, y1, x2, y2) bounding box or None if no margin text detected
+    """
+    width, height = img.size
+    gray = np.array(img.convert('L'))
+    binary = gray < 200
+
+    # Check leftmost 10% of page
+    left_region_width = int(width * 0.10)
+    left_region = binary[:, :left_region_width]
+
+    # Sum density per column
+    col_density = np.sum(left_region, axis=0)
+
+    # If there's significant content in left margin, mark for removal
+    if np.max(col_density) > height * 0.15:
+        # Find the rightmost extent of left margin content
+        threshold = height * 0.05
+        margin_end = 0
+        for i in range(left_region_width):
+            if col_density[i] > threshold:
+                margin_end = i + int(width * 0.02)  # Add small buffer
+
+        if margin_end > 0:
+            return (0, 0, min(margin_end, left_region_width), height)
+
+    return None
+
+
+def detect_right_margin_region(img: Image.Image) -> Optional[Tuple[int, int, int, int]]:
+    """
+    Detect proprietary text in the right margin.
+
+    Returns:
+        (x1, y1, x2, y2) bounding box or None if no margin text detected
+    """
+    width, height = img.size
+    gray = np.array(img.convert('L'))
+    binary = gray < 200
+
+    # Check rightmost 5% of page
+    right_region_start = int(width * 0.95)
+    right_region = binary[:, right_region_start:]
+
+    # Sum density per column
+    col_density = np.sum(right_region, axis=0)
+
+    # If there's significant content in right margin
+    if np.max(col_density) > height * 0.1:
+        return (right_region_start, 0, width, height)
+
+    return None
+
+
+def white_fill_regions(img: Image.Image, regions: List[Tuple[int, int, int, int]]) -> Image.Image:
+    """
+    White-fill specified regions in an image.
+
+    Args:
+        img: PIL Image
+        regions: List of (x1, y1, x2, y2) bounding boxes to white-fill
+
+    Returns:
+        New image with regions filled with white
+    """
+    result = img.copy()
+    draw = ImageDraw.Draw(result)
+
+    for region in regions:
+        x1, y1, x2, y2 = region
+        draw.rectangle([x1, y1, x2, y2], fill='white')
+
+    return result
+
+
+def extract_data_with_ocr(img: Image.Image, title_block_region: Tuple[int, int, int, int]) -> ExtractedData:
+    """
+    Extract drawing data from the title block region using OCR.
+
+    Args:
+        img: Full page image
+        title_block_region: (x1, y1, x2, y2) of title block
+
+    Returns:
+        ExtractedData with values from OCR
+    """
+    data = ExtractedData()
+
+    if not HAS_OCR:
+        return data
+
+    try:
+        x1, y1, x2, y2 = title_block_region
+        title_block_img = img.crop((x1, y1, x2, y2))
+
+        # Run OCR on the title block
+        ocr_text = pytesseract.image_to_string(title_block_img, lang='fra+eng')
+
+        # Extract data using the existing patterns
+        data = extract_drawing_data(ocr_text)
+
+    except Exception as e:
+        print(f"  OCR extraction failed: {e}")
+
+    return data
+
+
+def anonymize_page_whitefill(
+    pdf_path: Path,
+    page_num: int,
+    plan_id: str,
+    zip_name: str,
+    extracted_data: ExtractedData,
+    output_path: Path
+) -> Path:
+    """
+    Anonymize a single PDF page using the REGION WHITE-FILL approach.
+
+    Steps:
+    1. Render page to high-res image (300 DPI)
+    2. Detect title block region
+    3. Detect margin text regions
+    4. Extract data from title block (if OCR available and data not already extracted)
+    5. White-fill all proprietary regions
+    6. Add USI-PRO footer
+    """
+    # Step 1: Render page to high-res image
+    img = render_page_to_image(pdf_path, page_num, DPI)
+    page_width, page_height = img.size
+
+    # Step 2: Detect title block region
+    title_block = detect_title_block_region(img)
+
+    # Step 3: Detect margin regions
+    regions_to_remove = [title_block]
+
+    left_margin = detect_left_margin_region(img)
+    if left_margin:
+        regions_to_remove.append(left_margin)
+
+    right_margin = detect_right_margin_region(img)
+    if right_margin:
+        regions_to_remove.append(right_margin)
+
+    # Step 4: Extract data from title block if not already extracted
+    if extracted_data.drawing_no == "—" or extracted_data.designation == "—":
+        ocr_data = extract_data_with_ocr(img, title_block)
+        if ocr_data.drawing_no != "—" and extracted_data.drawing_no == "—":
+            extracted_data.drawing_no = ocr_data.drawing_no
+        if ocr_data.designation != "—" and extracted_data.designation == "—":
+            extracted_data.designation = ocr_data.designation
+        if ocr_data.material != "—" and extracted_data.material == "—":
+            extracted_data.material = ocr_data.material
+        if ocr_data.finish != "—" and extracted_data.finish == "—":
+            extracted_data.finish = ocr_data.finish
+
+    # Step 5: White-fill all proprietary regions
+    anonymized_img = white_fill_regions(img, regions_to_remove)
+
+    # Step 6: Add footer and save as PDF
+    add_footer_to_image(anonymized_img, plan_id, zip_name, extracted_data, output_path)
+
+    return output_path
+
+
+# =============================================================================
+# LEGACY APPROACH: Extract and Rebuild (kept for reference/fallback)
 # =============================================================================
 
 def label_connected_components(binary_mask: np.ndarray) -> Tuple[np.ndarray, int]:
@@ -895,29 +1184,19 @@ def anonymize_page(
     output_path: Path
 ) -> Path:
     """
-    Anonymize a single PDF page using the EXTRACT AND REBUILD approach.
+    Anonymize a single PDF page using the REGION WHITE-FILL approach.
 
     Steps:
     1. Render page to high-res image (300 DPI)
-    2. Detect individual drawing views (clusters of geometry)
-    3. Extract each view from the original image
-    4. Rebuild views on a blank white page, preserving relative positions
+    2. Detect title block and margin regions
+    3. Extract data from title block (OCR if available)
+    4. White-fill proprietary regions
     5. Add USI-PRO footer (plan ID, logo, data table)
     """
-    # Step 1: Render page to high-res image
-    img = render_page_to_image(pdf_path, page_num, DPI)
-    page_width, page_height = img.size
-
-    # Step 2: Detect drawing views
-    views = detect_drawing_views(img)
-
-    # Step 3 & 4: Rebuild on blank page (extraction happens in detect_drawing_views)
-    rebuilt_img = rebuild_page(views, page_width, page_height)
-
-    # Step 5: Add footer and save as PDF
-    add_footer_to_image(rebuilt_img, plan_id, zip_name, extracted_data, output_path)
-
-    return output_path
+    # Use the new white-fill approach
+    return anonymize_page_whitefill(
+        pdf_path, page_num, plan_id, zip_name, extracted_data, output_path
+    )
 
 
 def merge_pdfs(pdf_paths: List[Path], output_path: Path):
