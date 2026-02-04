@@ -257,6 +257,9 @@ def run_anonymization(input_path: Path, plan_id: str = None) -> dict:
 class USIProHandler(SimpleHTTPRequestHandler):
     """Custom HTTP request handler for USI-PRO."""
 
+    # Use HTTP/1.1 for better proxy compatibility (Codespaces, etc.)
+    protocol_version = "HTTP/1.1"
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(BASE_DIR), **kwargs)
 
