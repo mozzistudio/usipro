@@ -285,168 +285,147 @@ def render_page_to_image(pdf_path: Path, page_num: int, dpi: int = DPI) -> Image
     return pil_image
 
 
-def detect_title_block_regions(img: Image.Image) -> list[tuple[int, int, int, int]]:
+def detect_drawing_region(img: Image.Image) -> tuple[int, int, int, int]:
     """
-    Detect regions likely to be title blocks, tables, or text areas to white-fill.
-    Returns list of (x1, y1, x2, y2) bounding boxes.
+    WHITELIST APPROACH: Detect the main technical drawing region.
 
-    IMPORTANT: We preserve the frame border with grid references (1-8, A-F).
-    We only remove content OUTSIDE the main frame or in specific areas
-    like title blocks and revision tables INSIDE the frame.
+    Instead of trying to detect what to REMOVE (blacklist), we detect what to KEEP.
+    The technical drawing is the largest dense cluster of lines/shapes on the page.
+    Everything outside this region will be white-filled.
+
+    Returns (x1, y1, x2, y2) bounding box of the drawing area.
     """
-    width, height = img.size
-    regions = []
-
-    # The drawing frame has:
-    # - Outer edge at ~1.2% from page edge
-    # - Grid labels (1-8 horizontal, A-F vertical) between outer and inner frame lines
-    # - Inner drawing area starts at ~3% from page edge
-    # Proprietary text is placed OUTSIDE the frame (in the ~1.2% margin)
-
-    outer_margin = 0.012  # Page edge to frame outer line (~1.2%)
-    inner_start = 0.03    # Where drawing area starts (after grid labels)
-    inner_end = 0.97      # Where drawing area ends (before grid labels)
-
-    # =============================================================
-    # OUTSIDE FRAME MARGINS - Remove proprietary text in margins
-    # These are OUTSIDE the frame border lines
-    # =============================================================
-
-    # Left margin (outside frame) - contains vertical proprietary text
-    # like "PROPRIETE DE AZUR LIGHT SYSTEMS... NE PEUT ETRE EXPOSE..."
-    regions.append((
-        0,
-        0,
-        int(width * outer_margin),
-        height
-    ))
-
-    # Right margin (outside frame) - contains vertical URL text
-    # like "WWW.AZURLIGHT-SYSTEMS.COM"
-    regions.append((
-        int(width * (1 - outer_margin)),
-        0,
-        width,
-        height
-    ))
-
-    # Top margin (outside frame)
-    regions.append((
-        0,
-        0,
-        width,
-        int(height * outer_margin)
-    ))
-
-    # Bottom margin (outside frame)
-    regions.append((
-        0,
-        int(height * (1 - outer_margin)),
-        width,
-        height
-    ))
-
-    # =============================================================
-    # INSIDE FRAME - Title block, revision tables, notes
-    # =============================================================
-
-    # Title block area (bottom-right quadrant, columns 5-8, rows E-F)
-    # This is the main area with company info, part number, logo, etc.
-    # Covers: REVISIONS table, MATIERE/MATERIAL, drawing number, company logo
-    regions.append((
-        int(width * 0.50),    # x1 - starts at ~column 5 (50% width)
-        int(height * 0.58),   # y1 - starts at ~row E (58% height)
-        int(width * inner_end),  # x2 - ends at frame inner edge
-        int(height * inner_end)  # y2 - ends at frame inner edge
-    ))
-
-    # Bottom-left corner codes (like "F9670" at column 1, row F)
-    regions.append((
-        int(width * inner_start),  # x1 - just inside frame
-        int(height * 0.90),        # y1 - bottom area (row F)
-        int(width * 0.10),         # x2 - first column area
-        int(height * inner_end)    # y2 - frame inner edge
-    ))
-
-    return regions
-
-
-def white_fill_regions(img: Image.Image, regions: list[tuple[int, int, int, int]]) -> Image.Image:
-    """White-fill specified regions of an image."""
-    img_copy = img.copy()
-    draw = ImageDraw.Draw(img_copy)
-
-    for region in regions:
-        x1, y1, x2, y2 = region
-        # Ensure coordinates are within bounds
-        x1 = max(0, min(x1, img.width - 1))
-        y1 = max(0, min(y1, img.height - 1))
-        x2 = max(0, min(x2, img.width))
-        y2 = max(0, min(y2, img.height))
-
-        draw.rectangle([x1, y1, x2, y2], fill="white")
-
-    return img_copy
-
-
-def detect_and_remove_logos(img: Image.Image) -> Image.Image:
-    """Detect and remove logos from the image using simple heuristics.
-
-    IMPORTANT: We avoid the frame border area (outer ~3% on each side)
-    to preserve the grid reference system (1-8, A-E).
-    """
-    # Convert to grayscale for analysis
-    gray = img.convert('L')
-    width, height = img.size
-
-    # Frame starts at ~3% from edges - we search INSIDE this area
-    frame_start = 0.03
-
-    # Look for dense non-white regions in typical logo locations
-    # All coordinates are INSIDE the frame area to preserve grid references
-    logo_search_regions = [
-        # Top-left corner (inside frame)
-        (int(width * frame_start), int(height * frame_start),
-         int(width * 0.20), int(height * 0.12)),
-        # Top-right corner (inside frame)
-        (int(width * 0.80), int(height * frame_start),
-         int(width * (1 - frame_start)), int(height * 0.12)),
-        # Bottom-left corner (inside frame) - often has company logos
-        (int(width * frame_start), int(height * 0.88),
-         int(width * 0.20), int(height * (1 - frame_start))),
-        # Top-center (inside frame)
-        (int(width * 0.40), int(height * frame_start),
-         int(width * 0.60), int(height * 0.08)),
-    ]
-
-    img_copy = img.copy()
-    draw = ImageDraw.Draw(img_copy)
-
     import numpy as np
 
-    for region in logo_search_regions:
-        x1, y1, x2, y2 = region
-        # Ensure valid coordinates
-        x1, y1 = max(0, x1), max(0, y1)
-        x2, y2 = min(width, x2), min(height, y2)
+    width, height = img.size
 
-        if x2 <= x1 or y2 <= y1:
-            continue
+    # Convert to grayscale
+    gray = np.array(img.convert('L'))
 
-        # Check if region has significant dark content (potential logo)
-        region_crop = gray.crop((x1, y1, x2, y2))
+    # Threshold: pixels darker than 240 are considered "content"
+    # (lines, text, shapes - anything that's not pure white background)
+    content_mask = gray < 240
 
-        # Calculate average pixel value (255 = white, 0 = black)
-        pixels = np.array(region_crop)
-        if pixels.size > 0:
-            dark_ratio = np.sum(pixels < 200) / pixels.size
+    # Find coordinates of all content pixels
+    content_coords = np.where(content_mask)
 
-            # If region has significant dark content, white it out
-            # Using higher threshold (15%) to be more conservative
-            if dark_ratio > 0.15:
-                draw.rectangle([x1, y1, x2, y2], fill="white")
+    if len(content_coords[0]) == 0:
+        # No content found - return full page minus small margin
+        margin = int(min(width, height) * 0.02)
+        return (margin, margin, width - margin, height - margin)
 
-    return img_copy
+    # Get bounding box of ALL content
+    y_coords = content_coords[0]
+    x_coords = content_coords[1]
+
+    # Simple approach: find the bounding box of all content
+    # Then we'll refine by looking at content density
+    raw_x1, raw_x2 = int(np.min(x_coords)), int(np.max(x_coords))
+    raw_y1, raw_y2 = int(np.min(y_coords)), int(np.max(y_coords))
+
+    # Divide the image into a grid to analyze content density
+    # This helps distinguish the main drawing from title blocks/notes
+    grid_size = 20  # 20x20 grid
+    cell_h = height // grid_size
+    cell_w = width // grid_size
+
+    # Calculate density for each cell
+    density_grid = np.zeros((grid_size, grid_size))
+    for gy in range(grid_size):
+        for gx in range(grid_size):
+            y1 = gy * cell_h
+            y2 = min((gy + 1) * cell_h, height)
+            x1 = gx * cell_w
+            x2 = min((gx + 1) * cell_w, width)
+
+            cell = content_mask[y1:y2, x1:x2]
+            if cell.size > 0:
+                density_grid[gy, gx] = np.sum(cell) / cell.size
+
+    # Find cells with significant content (> 1% dark pixels)
+    # Technical drawings have thin lines so even 1% is significant
+    significant_threshold = 0.01
+    significant_cells = density_grid > significant_threshold
+
+    # Find the bounding box of significant cells
+    sig_coords = np.where(significant_cells)
+
+    if len(sig_coords[0]) == 0:
+        # Fall back to raw bounding box
+        x1, y1, x2, y2 = raw_x1, raw_y1, raw_x2, raw_y2
+    else:
+        # Get grid cell bounds
+        grid_y1, grid_y2 = int(np.min(sig_coords[0])), int(np.max(sig_coords[0]))
+        grid_x1, grid_x2 = int(np.min(sig_coords[1])), int(np.max(sig_coords[1]))
+
+        # Convert back to pixel coordinates
+        x1 = grid_x1 * cell_w
+        y1 = grid_y1 * cell_h
+        x2 = min((grid_x2 + 1) * cell_w, width)
+        y2 = min((grid_y2 + 1) * cell_h, height)
+
+    # Refine: within this region, find the actual content bounds
+    # This removes empty space within the grid cells
+    region_mask = content_mask[y1:y2, x1:x2]
+    region_coords = np.where(region_mask)
+
+    if len(region_coords[0]) > 0:
+        inner_y1 = int(np.min(region_coords[0]))
+        inner_y2 = int(np.max(region_coords[0]))
+        inner_x1 = int(np.min(region_coords[1]))
+        inner_x2 = int(np.max(region_coords[1]))
+
+        # Adjust to absolute coordinates
+        x1 = x1 + inner_x1
+        y1 = y1 + inner_y1
+        x2 = x1 + (inner_x2 - inner_x1)
+        y2 = y1 + (inner_y2 - inner_y1)
+
+    # Add margin around the detected region (3% of page dimensions)
+    # This ensures we don't clip any part of the drawing
+    margin_x = int(width * 0.03)
+    margin_y = int(height * 0.03)
+
+    x1 = max(0, x1 - margin_x)
+    y1 = max(0, y1 - margin_y)
+    x2 = min(width, x2 + margin_x)
+    y2 = min(height, y2 + margin_y)
+
+    return (x1, y1, x2, y2)
+
+
+def white_fill_outside_region(img: Image.Image, keep_region: tuple[int, int, int, int]) -> Image.Image:
+    """
+    White-fill everything OUTSIDE the specified region.
+    This is the core of the whitelist approach.
+
+    Args:
+        img: Source image
+        keep_region: (x1, y1, x2, y2) bounding box to KEEP
+
+    Returns:
+        Image with everything outside keep_region white-filled
+    """
+    width, height = img.size
+    x1, y1, x2, y2 = keep_region
+
+    # Create a new white image
+    result = Image.new('RGB', (width, height), 'white')
+
+    # Paste the region we want to keep
+    # Ensure coordinates are valid
+    x1 = max(0, min(x1, width))
+    y1 = max(0, min(y1, height))
+    x2 = max(0, min(x2, width))
+    y2 = max(0, min(y2, height))
+
+    if x2 > x1 and y2 > y1:
+        # Crop the region to keep from the original
+        region_to_keep = img.crop((x1, y1, x2, y2))
+        # Paste it onto the white background
+        result.paste(region_to_keep, (x1, y1))
+
+    return result
 
 
 def create_footer_overlay(
@@ -541,16 +520,28 @@ def anonymize_page(
     extracted_data: ExtractedData,
     output_path: Path
 ) -> Path:
-    """Anonymize a single PDF page and save as new PDF."""
-    # Step 1: Render page to high-res image
+    """Anonymize a single PDF page and save as new PDF.
+
+    WHITELIST APPROACH:
+    Instead of trying to detect and remove specific elements (blacklist),
+    we detect the main technical drawing region and keep ONLY that.
+    Everything else is automatically white-filled.
+
+    This works regardless of client format because technical drawings
+    share common characteristics: dense clusters of lines, dimensions,
+    and geometric shapes in the center area of the page.
+    """
+    # Step 1: Render page to high-res image (300 DPI)
     img = render_page_to_image(pdf_path, page_num, DPI)
 
-    # Step 2: Detect and white-fill title block regions
-    regions = detect_title_block_regions(img)
-    img = white_fill_regions(img, regions)
+    # Step 2: WHITELIST APPROACH - Detect the drawing region to KEEP
+    # This finds the bounding box of the main technical drawing content
+    drawing_region = detect_drawing_region(img)
 
-    # Step 3: Detect and remove logos
-    img = detect_and_remove_logos(img)
+    # Step 3: White-fill everything OUTSIDE the drawing region
+    # This automatically removes: title blocks, logos, company names,
+    # BOM tables, revision tables, notes, stamps, frame borders, etc.
+    img = white_fill_outside_region(img, drawing_region)
 
     # Step 4: Calculate page dimensions
     page_width = img.width * 72 / DPI
