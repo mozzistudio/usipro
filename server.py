@@ -39,7 +39,9 @@ def allowed_file(filename):
 
 def run_anonymization(input_path: Path, plan_id: str = None) -> dict:
     """Run the anonymization pipeline and return result info."""
-    cmd = ['python', str(BASE_DIR / 'anonymize.py'), str(input_path)]
+    # Use sys.executable to ensure we use the same Python interpreter as the server
+    import sys
+    cmd = [sys.executable, str(BASE_DIR / 'anonymize.py'), str(input_path)]
 
     if plan_id and input_path.suffix.lower() == '.pdf':
         cmd.extend(['--plan-id', plan_id])
@@ -223,9 +225,17 @@ class USIProHandler(SimpleHTTPRequestHandler):
                     'log': result['stdout']
                 })
             else:
+                # Include stderr details in error message for better debugging
+                error_msg = 'Processing failed'
+                if result['stderr']:
+                    # Extract the most relevant error line
+                    stderr_lines = result['stderr'].strip().split('\n')
+                    error_detail = stderr_lines[-1] if stderr_lines else ''
+                    if error_detail:
+                        error_msg = f'Processing failed: {error_detail}'
                 self.send_json({
                     'success': False,
-                    'error': 'Processing failed',
+                    'error': error_msg,
                     'log': result['stdout'] + '\n' + result['stderr']
                 }, 500)
 
