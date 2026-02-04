@@ -15,6 +15,11 @@ from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
+
+class ReusableHTTPServer(HTTPServer):
+    """HTTPServer subclass that allows address reuse to avoid 'Address already in use' errors."""
+    allow_reuse_address = True
+
 # Configuration
 BASE_DIR = Path(__file__).parent
 UPLOAD_FOLDER = BASE_DIR / "input"
@@ -266,10 +271,10 @@ class USIProHandler(SimpleHTTPRequestHandler):
         print(f"[{self.log_date_time_string()}] {args[0]}")
 
 
-def run_server(host='0.0.0.0', port=5000):
+def run_server(host='0.0.0.0', port=8080):
     """Run the HTTP server."""
     server_address = (host, port)
-    httpd = HTTPServer(server_address, USIProHandler)
+    httpd = ReusableHTTPServer(server_address, USIProHandler)
     print(f"USI-PRO Server running at http://{host}:{port}")
     print("Press Ctrl+C to stop")
     try:
@@ -283,7 +288,7 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='USI-PRO Static Web Server')
     parser.add_argument('--host', default='0.0.0.0', help='Host to bind to (default: 0.0.0.0)')
-    parser.add_argument('--port', type=int, default=5000, help='Port to listen on (default: 5000)')
+    parser.add_argument('--port', type=int, default=8080, help='Port to listen on (default: 8080)')
     args = parser.parse_args()
 
     run_server(args.host, args.port)
