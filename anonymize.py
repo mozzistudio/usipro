@@ -289,81 +289,83 @@ def detect_title_block_regions(img: Image.Image) -> list[tuple[int, int, int, in
     """
     Detect regions likely to be title blocks, tables, or text areas to white-fill.
     Returns list of (x1, y1, x2, y2) bounding boxes.
+
+    IMPORTANT: We preserve the frame border with grid references (1-8, A-F).
+    We only remove content OUTSIDE the main frame or in specific areas
+    like title blocks and revision tables INSIDE the frame.
     """
     width, height = img.size
     regions = []
 
-    # Standard title block locations (these are typical positions)
-    # Bottom-right corner (most common location for title blocks)
-    regions.append((
-        int(width * 0.55),  # x1
-        int(height * 0.75),  # y1
-        int(width * 0.99),  # x2
-        int(height * 0.99)   # y2
-    ))
+    # The drawing frame has:
+    # - Outer edge at ~1.2% from page edge
+    # - Grid labels (1-8 horizontal, A-F vertical) between outer and inner frame lines
+    # - Inner drawing area starts at ~3% from page edge
+    # Proprietary text is placed OUTSIDE the frame (in the ~1.2% margin)
 
-    # Right side strip (for vertical title blocks)
-    regions.append((
-        int(width * 0.85),
-        int(height * 0.10),
-        int(width * 0.99),
-        int(height * 0.75)
-    ))
+    outer_margin = 0.012  # Page edge to frame outer line (~1.2%)
+    inner_start = 0.03    # Where drawing area starts (after grid labels)
+    inner_end = 0.97      # Where drawing area ends (before grid labels)
 
-    # Bottom strip (for horizontal title blocks/notes)
-    regions.append((
-        int(width * 0.01),
-        int(height * 0.85),
-        int(width * 0.55),
-        int(height * 0.99)
-    ))
+    # =============================================================
+    # OUTSIDE FRAME MARGINS - Remove proprietary text in margins
+    # These are OUTSIDE the frame border lines
+    # =============================================================
 
-    # Top strip (for header blocks)
-    regions.append((
-        int(width * 0.01),
-        int(height * 0.01),
-        int(width * 0.99),
-        int(height * 0.08)
-    ))
-
-    # Left strip (for revision tables)
-    regions.append((
-        int(width * 0.01),
-        int(height * 0.01),
-        int(width * 0.12),
-        int(height * 0.50)
-    ))
-
-    # Frame border labels - left edge
+    # Left margin (outside frame) - contains vertical proprietary text
+    # like "PROPRIETE DE AZUR LIGHT SYSTEMS... NE PEUT ETRE EXPOSE..."
     regions.append((
         0,
         0,
-        int(width * 0.02),
+        int(width * outer_margin),
         height
     ))
 
-    # Frame border labels - right edge
+    # Right margin (outside frame) - contains vertical URL text
+    # like "WWW.AZURLIGHT-SYSTEMS.COM"
     regions.append((
-        int(width * 0.98),
+        int(width * (1 - outer_margin)),
         0,
         width,
         height
     ))
 
-    # Frame border labels - top edge
+    # Top margin (outside frame)
     regions.append((
         0,
         0,
         width,
-        int(height * 0.02)
+        int(height * outer_margin)
     ))
 
-    # Frame border labels - bottom edge (except footer area)
+    # Bottom margin (outside frame)
     regions.append((
         0,
-        int(height * 0.98),
+        int(height * (1 - outer_margin)),
         width,
         height
+    ))
+
+    # =============================================================
+    # INSIDE FRAME - Title block, revision tables, notes
+    # =============================================================
+
+    # Title block area (bottom-right quadrant, columns 5-8, rows E-F)
+    # This is the main area with company info, part number, logo, etc.
+    # Covers: REVISIONS table, MATIERE/MATERIAL, drawing number, company logo
+    regions.append((
+        int(width * 0.50),    # x1 - starts at ~column 5 (50% width)
+        int(height * 0.58),   # y1 - starts at ~row E (58% height)
+        int(width * inner_end),  # x2 - ends at frame inner edge
+        int(height * inner_end)  # y2 - ends at frame inner edge
+    ))
+
+    # Bottom-left corner codes (like "F9670" at column 1, row F)
+    regions.append((
+        int(width * inner_start),  # x1 - just inside frame
+        int(height * 0.90),        # y1 - bottom area (row F)
+        int(width * 0.10),         # x2 - first column area
+        int(height * inner_end)    # y2 - frame inner edge
     ))
 
     return regions
@@ -388,37 +390,60 @@ def white_fill_regions(img: Image.Image, regions: list[tuple[int, int, int, int]
 
 
 def detect_and_remove_logos(img: Image.Image) -> Image.Image:
-    """Detect and remove logos from the image using simple heuristics."""
+    """Detect and remove logos from the image using simple heuristics.
+
+    IMPORTANT: We avoid the frame border area (outer ~3% on each side)
+    to preserve the grid reference system (1-8, A-E).
+    """
     # Convert to grayscale for analysis
     gray = img.convert('L')
     width, height = img.size
 
+    # Frame starts at ~3% from edges - we search INSIDE this area
+    frame_start = 0.03
+
     # Look for dense non-white regions in typical logo locations
+    # All coordinates are INSIDE the frame area to preserve grid references
     logo_search_regions = [
-        (0, 0, int(width * 0.25), int(height * 0.15)),  # Top-left
-        (int(width * 0.75), 0, width, int(height * 0.15)),  # Top-right
-        (0, int(height * 0.85), int(width * 0.25), height),  # Bottom-left
-        (int(width * 0.75), int(height * 0.85), width, height),  # Bottom-right
-        (int(width * 0.4), 0, int(width * 0.6), int(height * 0.1)),  # Top-center
+        # Top-left corner (inside frame)
+        (int(width * frame_start), int(height * frame_start),
+         int(width * 0.20), int(height * 0.12)),
+        # Top-right corner (inside frame)
+        (int(width * 0.80), int(height * frame_start),
+         int(width * (1 - frame_start)), int(height * 0.12)),
+        # Bottom-left corner (inside frame) - often has company logos
+        (int(width * frame_start), int(height * 0.88),
+         int(width * 0.20), int(height * (1 - frame_start))),
+        # Top-center (inside frame)
+        (int(width * 0.40), int(height * frame_start),
+         int(width * 0.60), int(height * 0.08)),
     ]
 
     img_copy = img.copy()
     draw = ImageDraw.Draw(img_copy)
 
+    import numpy as np
+
     for region in logo_search_regions:
         x1, y1, x2, y2 = region
+        # Ensure valid coordinates
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(width, x2), min(height, y2)
+
+        if x2 <= x1 or y2 <= y1:
+            continue
+
         # Check if region has significant dark content (potential logo)
         region_crop = gray.crop((x1, y1, x2, y2))
 
         # Calculate average pixel value (255 = white, 0 = black)
-        import numpy as np
         pixels = np.array(region_crop)
         if pixels.size > 0:
-            avg_value = np.mean(pixels)
             dark_ratio = np.sum(pixels < 200) / pixels.size
 
             # If region has significant dark content, white it out
-            if dark_ratio > 0.1:  # More than 10% dark pixels
+            # Using higher threshold (15%) to be more conservative
+            if dark_ratio > 0.15:
                 draw.rectangle([x1, y1, x2, y2], fill="white")
 
     return img_copy
