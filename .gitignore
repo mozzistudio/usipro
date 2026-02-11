@@ -3,6 +3,12 @@ input/*
 !input/.gitkeep
 output/*
 !output/.gitkeep
+flagged/*
+!flagged/.gitkeep
+reports/*
+!reports/.gitkeep
+logs/*
+!logs/.gitkeep
 
 # Python
 __pycache__/

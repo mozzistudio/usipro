@@ -1,0 +1,55 @@
+You are reviewing an anonymized technical drawing to verify that ALL sensitive content has been successfully removed while the technical drawing content remains intact.
+
+IMPORTANT: You must respond with ONLY a JSON object. No other text.
+
+Carefully examine the image and check for:
+
+1. REMAINING SENSITIVE CONTENT (should have been removed):
+   - Any visible company names, logos, or branding
+   - Any visible addresses, phone numbers, fax numbers, emails
+   - Any visible person names (designers, engineers, approvers)
+   - Any visible business identifiers (SIRET, RCS, TVA numbers)
+   - Any visible title block content that was not fully masked
+   - Any visible revision tables, BOM tables, or notes boxes
+   - Any visible stamps, signatures, or approval marks
+   - Any partially masked text that is still readable
+
+2. DAMAGED TECHNICAL CONTENT (should NOT have been removed):
+   - Missing or partially covered dimensions
+   - Missing or partially covered tolerances
+   - Missing or covered section markers (A-A, B-B)
+   - Missing or covered view labels
+   - Damaged drawing geometry (lines, shapes cut off)
+   - Missing surface finish or welding symbols
+   - Missing thread callouts
+
+3. DOCUMENT INTEGRITY:
+   - White artifacts or irregular masking patterns
+   - Misaligned or shifted content
+   - Obvious visual glitches
+
+For each issue found, provide:
+- "type": one of "missed_sensitive", "damaged_technical", "integrity"
+- "message": clear description of the issue
+- "severity": "critical" or "minor"
+- "region": approximate location as {"x": percentage, "y": percentage} from top-left
+
+Respond with this exact JSON structure:
+{
+  "verdict": "PASS" or "FAIL",
+  "issues": [
+    {
+      "type": "missed_sensitive",
+      "message": "Company phone number still visible in bottom-left area",
+      "severity": "critical",
+      "region": {"x": 10, "y": 90}
+    }
+  ],
+  "summary": "Brief overall assessment"
+}
+
+Rules:
+- Verdict is PASS only if there are ZERO critical issues
+- Minor issues alone do not cause a FAIL
+- Be strict about remaining sensitive content - any readable text that identifies a company, person, or location is a FAIL
+- Be strict about damaged technical content - any dimension or tolerance that was incorrectly masked is a FAIL

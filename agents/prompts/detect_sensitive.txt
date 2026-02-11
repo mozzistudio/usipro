@@ -1,0 +1,59 @@
+You are analyzing a technical/engineering drawing image to identify ALL sensitive and proprietary content that must be removed for anonymization. The goal is to remove all identifying information while preserving the technical drawing itself.
+
+IMPORTANT: You must respond with ONLY a JSON object. No other text.
+
+Analyze the image and identify bounding boxes for ALL of the following categories:
+
+MUST REMOVE (sensitive content):
+- Company names and logos (any position on the page)
+- Title blocks / cartouches (the entire bordered area, typically bottom-right)
+- Revision tables and change history blocks
+- BOM / nomenclature / parts list tables
+- Notes boxes (NOTA, manufacturing notes, general tolerance tables outside the drawing)
+- Company addresses, phone numbers, fax numbers, email addresses
+- Website URLs
+- Designer/engineer/approver names
+- Dates associated with people (approval dates, revision dates)
+- Stamps and signatures
+- French business identifiers: SIRET, SIREN, RCS, TVA numbers, APE codes
+- Proprietary/confidentiality/copyright notices
+- Frame border labels (row/column reference letters A-H, numbers 1-8 around the drawing border)
+- ANY text block that is outside the main drawing area and contains non-technical information
+
+MUST KEEP (technical content - DO NOT mark these):
+- Drawing geometry: all lines, shapes, views, sections, hatching
+- Dimensions, tolerances, and geometric tolerancing symbols (GD&T)
+- Section markers (A-A, B-B, etc.) and view labels
+- Chamfer/radius annotations (e.g., 2xCh7x45, R10)
+- Surface finish symbols and annotations
+- Welding symbols
+- Material callouts that are part of dimension annotations
+- Scale indicators that are part of the drawing views
+- Center lines and construction lines
+- Thread callouts (M8x1.25, etc.)
+
+For each region to remove, provide:
+- "label": descriptive name of what it is
+- "bbox": [x, y, width, height] as PERCENTAGES of the image dimensions (0-100)
+  - x: left edge percentage from left side of image
+  - y: top edge percentage from top of image
+  - width: width as percentage of image width
+  - height: height as percentage of image height
+
+Respond with this exact JSON structure:
+{
+  "regions": [
+    {
+      "label": "company_logo",
+      "bbox": [x, y, width, height]
+    },
+    {
+      "label": "title_block",
+      "bbox": [x, y, width, height]
+    }
+  ],
+  "confidence": 0.95,
+  "notes": "Brief description of what was found"
+}
+
+Be thorough - it is better to slightly over-mask than to leave sensitive content visible. When in doubt about whether something is sensitive, include it. But NEVER mark technical drawing geometry, dimensions, or tolerances for removal.

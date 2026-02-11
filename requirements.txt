@@ -1,10 +1,11 @@
-# USI-PRO Technical Drawing Anonymization Pipeline
+# USI-PRO Multi-Agent PDF Anonymizer
 # Install with: pip install -r requirements.txt
+# Also requires: brew install poppler tesseract
 
-# PDF processing
-pypdfium2>=4.0.0
+anthropic>=0.39.0
+pypdf2>=3.0.0
+pdf2image>=1.16.0
 pillow>=10.0.0
-reportlab>=4.0.0
+pytesseract>=0.3.10
+pyyaml>=6.0
 numpy>=1.24.0
-
-# Web server uses Python's built-in http.server module (no external dependencies)

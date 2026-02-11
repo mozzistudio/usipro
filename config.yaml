@@ -1,0 +1,35 @@
+# USI-PRO Multi-Agent PDF Anonymizer Configuration
+
+# Directory paths
+directories:
+  input: input/
+  output: output/
+  flagged: flagged/
+  reports: reports/
+  logs: logs/
+  assets: assets/
+
+# PDF processing
+pdf:
+  dpi: 300
+  bbox_margin: 5  # pixels to expand each detection box
+
+# Claude Vision API
+api:
+  model: claude-sonnet-4-5-20250929
+  max_tokens: 4096
+  rate_limit_delay: 1.0  # seconds between API calls
+  timeout: 120  # seconds
+  max_retries: 3
+  retry_delay: 5  # seconds between retries
+
+# Orchestrator
+orchestrator:
+  max_correction_rounds: 3
+  checkpoint_interval: 50  # save progress every N files
+
+# Logging
+logging:
+  level: INFO
+  log_file: logs/processing.log
+  error_patterns_file: logs/error_patterns.jsonl
